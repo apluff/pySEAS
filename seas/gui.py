@@ -469,7 +469,7 @@ def run_gui(components: dict,
 
                     if component_id is None:  # Clear image.
                         im = np.empty((x, y))
-                        im[:] = np.NAN
+                        im[:] = np.nan
                         self.imgplot = self.ax.imshow(im)
                         self.canvas.draw()
                         return ()

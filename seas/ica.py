@@ -713,7 +713,7 @@ def rebuild_eigenbrain(eig_vec: np.ndarray,
         else:
             eigenbrains = np.empty(
                 (roimask.shape[0], roimask.shape[1], eig_vec.shape[1]))
-            eigenbrains[:] = np.NAN
+            eigenbrains[:] = np.nan
             eigenbrains[x, y, :] = eig_vec
         eigenbrains = np.swapaxes(eigenbrains, 0, 2)
         eigenbrains = np.swapaxes(eigenbrains, 1, 2)
@@ -730,7 +730,7 @@ def rebuild_eigenbrain(eig_vec: np.ndarray,
             eigenbrain = eigenbrain.reshape(eigb_shape)
         else:
             eigenbrain = np.empty(roimask.shape)
-            eigenbrain[:] = np.NAN
+            eigenbrain[:] = np.nan
             eigenbrain.flat[maskind] = eig_vec.T[index]
 
         return eigenbrain

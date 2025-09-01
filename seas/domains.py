@@ -97,7 +97,7 @@ def get_domain_map(components: dict,
             blur += 1
 
         eigenbrain = np.empty(shape)
-        eigenbrain[:] = np.NAN
+        eigenbrain[:] = np.nan
 
         for index in range(eig_vec.shape[1]):
 
@@ -117,7 +117,7 @@ def get_domain_map(components: dict,
 
     if roimask is not None:
         domain_ROIs = np.empty(shape)
-        domain_ROIs[:] = np.NAN
+        domain_ROIs[:] = np.nan
         domain_ROIs.flat[maskind] = domain_ROIs_vector
 
     else:
@@ -716,7 +716,7 @@ def threshold_by_domains(components: dict,
 
         eigenmask = np.zeros(shape, dtype=bool)
         eigenbrain = np.empty(shape)
-        eigenbrain[:] = np.NAN
+        eigenbrain[:] = np.nan
 
         for index in range(mask.shape[1]):
 
@@ -751,7 +751,7 @@ def threshold_by_domains(components: dict,
 
     # if roimask is not None:
     #     domain_ROIs = np.empty(shape)
-    #     domain_ROIs[:] = np.NAN
+    #     domain_ROIs[:] = np.nan
     #     domain_ROIs.flat[maskind] = domain_ROIs_vector
 
     # else:
