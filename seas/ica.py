@@ -376,7 +376,8 @@ def rebuild(components: dict,
     elif artifact_components == 'none':
         print('including all components')
         artifact_components = np.zeros(n_components)
-    elif ((not include_noise) and ('noise_components' in components.keys())):
+    
+    if ((not include_noise) and ('noise_components' in components.keys())):
         print('Not rebuilding noise components')
         artifact_components += components['noise_components']
         artifact_components[np.where(artifact_components > 1)] = 1
