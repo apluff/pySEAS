@@ -264,6 +264,7 @@ def project(vector: np.ndarray,
         try:
             vector = vector.astype('float64')
             rebuilt = rebuild(components,
+                              artifact_components='none',
                               apply_mean_filter=False).T
 
             rebuilt -= rebuilt.mean(axis=0)
