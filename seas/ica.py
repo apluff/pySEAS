@@ -308,6 +308,8 @@ def rebuild(components: dict,
             mhigh: float = 1.0,
             apply_component_filter: bool = False,
             chigh: float = 1.0,
+            apply_component_threshold: bool = False,
+            cthresh: float = 2.0,
             apply_masked_mean: bool = False,
             filter_method: str = 'butterworth_highpass',
             fps: float = 7.5,
@@ -337,6 +339,10 @@ def rebuild(components: dict,
             Whether to apply a butterworth_lowpass filter to IC timecourses before rebuild.
         chigh:
             A float determining the lowpass cutoff for the component filter, if used.
+        apply_component_threshold:
+            Whether to apply a z-score threshold on the component timeseries.
+        cthresh:
+            A float determining the z-score threshold for the component threshold, if used.
         apply_masked_mean:
             If True, only re-adds the mean signal to pixels where at least one IC is defined. To be used for thresholded ICs.
         filter_method:
@@ -407,6 +413,11 @@ def rebuild(components: dict,
     if apply_component_filter:
         lpf_eig_mix = filter_components(eig_mix, fps=fps, high_cutoff=chigh)
         eig_mix = lpf_eig_mix
+
+    # Threshold component timecourses
+    if apply_component_threshold:
+        thresh_eig_mix = threshold_components(eig_mix, thresh_param=cthresh)
+        eig_mix = thresh_eig_mix
 
     if (t_start == None):
         t_start = 0
@@ -568,7 +579,7 @@ def filter_components(eig_mix: np.ndarray,
                       fps: float = 7.5,
                       high_cutoff: float = 0.5):
     '''
-    Applies a butterworth low pass filter to the ica component timecourses.
+    Applies a butterworth low pass filter to the IC timecourses.
 
     Arguments:
         eig_mix: 
@@ -581,8 +592,8 @@ def filter_components(eig_mix: np.ndarray,
     Returns:
         lpf_eig_mix: The filtered IC timecourses reconstructed as the eig_mix matrix.
     '''
+    
     print('Filtering component timecourses using butterworth_lowpass at '+ str(high_cutoff) +'Hz...')
-
     timecourses = eig_mix.T
     lpf_timecourses = np.zeros_like(timecourses)
     for index in range(timecourses.shape[0]):
@@ -590,6 +601,32 @@ def filter_components(eig_mix: np.ndarray,
     lpf_eig_mix = lpf_timecourses.T
 
     return lpf_eig_mix
+
+def threshold_components(eig_mix: np.ndarray,
+                         thresh_param: float):
+    '''
+    Applies a z-score threshold to the IC timecourses.
+
+    Arguments:
+        eig_mix: 
+            The mixing matrix containing IC timecourses.
+        thresh_param:
+            Z-score thresholding parameter (standard deviations).
+
+    Returns:
+        thresh_eig_mix: The thresholded IC timecourses reconstructed as the eig_mix matrix.
+    '''
+
+    print('Thresholding component timecourses using z-score: >' + str(thresh_param) +'s.d.')
+    timecourses = eig_mix.T
+    thresh_timecourses = np.zeros_like(timecourses)
+    for index in range(timecourses.shape[0]):
+        mean = np.mean(timecourses[index])
+        std = np.std(timecourses[index])
+        thresh_timecourses = timecourses[index][timecourses > mean + thresh_param*std]
+    thresh_eig_mix = thresh_timecourses.T
+
+    return thresh_eig_mix
 
 
 def rebuild_mean_roi_timecourse(components: np.ndarray,
