@@ -429,7 +429,7 @@ def rebuild(components: dict,
                     eig_mix[t_start:t_stop, reconstruct_indices].T).T
 
     if apply_masked_mean:
-        masks = components['masks']
+        masks = components['thresh_masks']
         assert masks is not None, \
         "Masks have not been assigned to dictionary"
         # Apply mean to masks only, zeroing unmasked pixels
