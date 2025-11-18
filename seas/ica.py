@@ -17,6 +17,7 @@ def project(vector: np.ndarray,
             shape: Tuple[int, int, int],
             roimask: np.ndarray = None,
             n_components: int = None,
+            crop_excess_noise: bool = True,
             svd_multiplier: float = 5,
             calc_residuals: bool = True,
             max_iter: int = 1000):
@@ -183,23 +184,26 @@ def project(vector: np.ndarray,
         reduced_n_components = int((noise.size - noise.sum()) * 1.25)
 
         print('reduced_n_components:', reduced_n_components)
+        
+        if crop_excess_noise:
+            if reduced_n_components < n_components:
+                print('Cropping', n_components, 'to', reduced_n_components)
 
-        if reduced_n_components < n_components:
-            print('Cropping', n_components, 'to', reduced_n_components)
+                ev_sort = np.argsort(eig_mix.std(axis=0))
+                eig_vec = eig_vec[:, ev_sort][:, ::-1]
+                eig_mix = eig_mix[:, ev_sort][:, ::-1]
+                noise = noise[ev_sort][::-1]
 
-            ev_sort = np.argsort(eig_mix.std(axis=0))
-            eig_vec = eig_vec[:, ev_sort][:, ::-1]
-            eig_mix = eig_mix[:, ev_sort][:, ::-1]
-            noise = noise[ev_sort][::-1]
+                eig_vec = eig_vec[:, :reduced_n_components]
+                eig_mix = eig_mix[:, :reduced_n_components]
+                n_components = reduced_n_components
+                noise = noise[:reduced_n_components]
 
-            eig_vec = eig_vec[:, :reduced_n_components]
-            eig_mix = eig_mix[:, :reduced_n_components]
-            n_components = reduced_n_components
-            noise = noise[:reduced_n_components]
-
-            components['lag1_full'] = components['lag1_full'][ev_sort][::-1]
+                components['lag1_full'] = components['lag1_full'][ev_sort][::-1]
+            else:
+                print('Less than 75% signal.  Not cropping excess noise.')
         else:
-            print('Less than 75% signal.  Not cropping excess noise.')
+            print('Noise retention enabled. Not cropping excess noise.')
 
         components['noise_components'] = noise
         components['cutoff'] = cutoff
