@@ -12,6 +12,9 @@ from seas.signalanalysis import butterworth, sort_noise, lag_n_autocorr
 from seas.hdf5manager import hdf5manager
 from seas.video import rotate, save, rescale, play, scale_video
 
+import cv2
+from skimage.morphology import remove_small_objects
+
 
 def project(vector: np.ndarray,
             shape: Tuple[int, int, int],
@@ -301,7 +304,6 @@ def project(vector: np.ndarray,
 
     print('\n')
     return components
-
 
 def rebuild(components: dict,
             artifact_components: np.ndarray = None,
@@ -625,13 +627,139 @@ def threshold_components(eig_mix: np.ndarray,
     timecourses = eig_mix.T
     thresh_timecourses = np.zeros_like(timecourses)
     for index in range(timecourses.shape[0]):
-        mean = np.mean(timecourses[index])
-        std = np.std(timecourses[index])
-        thresh_timecourses = timecourses[index][timecourses > mean + thresh_param*std]
+        timecourse = timecourses[index]
+        mean = np.mean(timecourse)
+        std = np.std(timecourse)
+        threshold = mean + thresh_param*std
+        timecourse[np.abs(timecourse) < np.abs(threshold)] = 0
+        thresh_timecourses[index] = timecourse
     thresh_eig_mix = thresh_timecourses.T
 
     return thresh_eig_mix
 
+def threshold_by_domains(components: dict,
+                   blur: int = 1,
+                   min_mask_size: int = 64,
+                   thresh_type: str = 'max',
+                   thresh_param: float = None):
+    '''
+    Function based on modified get_domain_map(). Thresholds ICs using a variety of methods for selective rebuild.
+
+    Arguments:
+        components: 
+            The dictionary of components returned from seas.ica.project.  ROIs are most interesting if artifacts has already been assigned through seas.gui.run_gui.
+        blur: 
+            An odd integer kernel Gaussian blur to run before segmenting.  ROIs look smoother with larger blurs, but you can lose some smaller domains.
+        min_mask_size:
+            An integer determining the minimum ROIs passed from each thresholded IC.
+        thresh_type:
+            A string used to determine IC threshold method. Choose from either 'max', 'z-score' or 'percentile'.
+        thresh_param:
+            A float used to determine the parameter for the given thresh_type. For 'z-score', this is the z-score threshold (eg; 2.0 for 2std). For 'percentile' this is the percentile used to threshold (eg; 95th percentile = 0.95).
+
+    Returns:
+        output: a dictionary containing the results of the operation, containing the following keys
+            domain_blur:
+                The Gaussian blur value used when generating the map
+            eig_vec: 
+                The thresholded eigenvectors (ICs).  
+            thresh_masks: 
+                The boolean masks used to threshold eig_vec.
+    '''
+    print('\nExtracting Domain ROIs\n-----------------------')
+    output = {}
+    output['domain_blur'] = blur
+
+    eig_vec = components['eig_vec'].copy()
+
+    shape = components['shape']
+    shape = (shape[1], shape[2])
+
+    if 'roimask' in components.keys() and components['roimask'] is not None:
+        roimask = components['roimask']
+        maskind = np.where(roimask.flat == 1)[0]
+    else:
+        roimask = None
+
+    if 'artifact_components' in components.keys():
+        artifact_components = components['artifact_components']
+
+        print('Switching to signal indices only for domain detection')
+
+        if 'noise_components' in components.keys():
+            noise_components = components['noise_components']
+
+            signal_indices = np.where((artifact_components +
+                                       noise_components) == 0)[0]
+        else:
+            print('no noise components found')
+            signal_indices = np.where(artifact_components == 0)[0]
+        # eig_vec = eig_vec[:, signal_indices] # Don't change number of ICs, we're updating back to dict
+    
+    mask = np.zeros_like(eig_vec, dtype=bool)
+
+    match thresh_type:
+        case 'max':
+            # Return indices across each eig_vec (loading vector for component) where loading is max
+            threshold_ROIs_vector = np.argmax(np.abs(eig_vec), axis=1)
+            # Then threshold by clearing eig_vec outside of max indices
+            mask[np.arange(eig_vec.shape[0]), threshold_ROIs_vector] = True
+        case 'z-score':
+            mean_ROIs_vector = np.nanmean(eig_vec, axis=0)
+            std_ROIs_vector = np.nanstd(eig_vec, axis=0)
+            z_ROIs_vector = (eig_vec - mean_ROIs_vector)/std_ROIs_vector
+            for i in np.arange(eig_vec.shape[0]):
+                mask[i, :] = np.abs(z_ROIs_vector[i]) > thresh_param
+        case 'percentile':
+            flipped = components['flipped']
+            # Flip ICs where necessary using flipped from dict
+            flipped_threshold_vec = np.multiply(flipped, eig_vec)
+            # Calculate 95 percentile cutoff for each IC
+            cutoff_vector = np.percentile(flipped, thresh_param, axis=0)
+            # Mask for all values above cutoff
+            for i in np.arange(eig_vec.shape[0]):
+                mask[i, :] = flipped_threshold_vec[i] > cutoff_vector[i]
+        case _:
+            print("Threshold type is neither max nor percentile.")
+
+    # Filter small mask ROIs and smooth using blur
+    if blur:
+        print('blurring domains...')
+        assert type(blur) is int, 'blur was not valid'
+        if blur % 2 != 1:
+            blur += 1
+
+        eigenmask = np.zeros(shape, dtype=bool)
+        eigenbrain = np.empty(shape)
+        eigenbrain[:] = np.nan
+
+        for index in range(mask.shape[1]):
+
+            if roimask is not None:
+                eigenmask.flat[maskind] = mask.T[index]
+                # Remove small mask objects
+                filtered = remove_small_objects(eigenmask, min_size=min_mask_size, connectivity=1)
+                filtered_float = filtered.astype(np.float64)
+                eigenbrain.flat[maskind] = filtered_float.flat[maskind]
+                # Then blur
+                blurred = cv2.GaussianBlur(eigenbrain, (blur, blur), 0)
+                mask.T[index] = blurred.flat[maskind]
+            else:
+                eigenbrain.flat = mask.T[index]
+                filtered = remove_small_objects(eigenbrain, min_size=min_mask_size, connectivity=1)
+                filtered_float = filtered.astype(np.float64)
+                eigenbrain.flat[maskind] = filtered_float.flat
+                blurred = cv2.GaussianBlur(eigenbrain, (blur, blur), 0)
+                mask.T[index] = blurred.flat
+
+    mask_bool = mask.astype(bool)
+    eig_vec[~mask_bool] = 0
+    
+    output['thresh_masks'] = mask
+    # output['thresh_vec'] = eig_vec
+    output['eig_vec'] = eig_vec
+    
+    return output
 
 def rebuild_mean_roi_timecourse(components: np.ndarray,
                                 mask: np.ndarray,
@@ -776,7 +904,6 @@ def rebuild_eigenbrain(eig_vec: np.ndarray,
             eigenbrain.flat[maskind] = eig_vec.T[index]
 
         return eigenbrain
-
 
 def filter_comparison(components: dict,
                       downsample: int = 4,

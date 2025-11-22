@@ -8,11 +8,12 @@ from seas.video import load, dfof, rotate, rescale
 from seas.filemanager import sort_experiments, get_exp_span_string, read_yaml
 from seas.rois import roi_loader, make_mask, get_masked_region, insert_masked_region, draw_bounding_box
 from seas.hdf5manager import hdf5manager
-from seas.ica import project, filter_mean
+from seas.ica import project, filter_mean, rebuild_eigenbrain, threshold_by_domains, filter_components, threshold_components, rebuild
 from seas.signalanalysis import sort_noise, lag_n_autocorr
 from seas.waveletAnalysis import waveletAnalysis
 
 from typing import List
+import tifffile as tif
 
 
 class Experiment:
@@ -112,7 +113,7 @@ class Experiment:
 
         if np.any(np.isnan(movie)):
             # If the video was already masked
-            roimask = np.zeros(movie[0].shape, dtype='uisnt8')
+            roimask = np.zeros(movie[0].shape, dtype='uint8')
             roimask[np.where(~np.isnan(movie[0]))] = 1
             self.roimask = roimask
 
@@ -461,3 +462,54 @@ class Experiment:
             f.print()
 
         return components
+
+def export_event_masks(components: dict,
+                       outpath: str,
+                       blur: int = 3,
+                       thresh_type: str = 'z-score',
+                       thresh_param: float = 7) -> None:
+    components_copy = components.copy()
+    threshold = threshold_by_domains(components_copy, 
+                                     blur = blur, 
+                                     thresh_type = thresh_type, 
+                                     thresh_param = thresh_param)
+    components_copy.update(threshold)
+    artifacts_bool = components_copy['artifact_components'].astype(np.bool)
+    event_components = components_copy['eig_vec'][:, ~artifacts_bool]
+    event_masks = rebuild_eigenbrain(event_components,
+                                     roimask = components_copy['roimask'], 
+                                     bulk = True)
+    event_masks = np.where(np.abs(event_masks) > 0, 255, 0)
+    event_masks = np.where(np.mean(event_masks, axis = 0) == 255, 0, event_masks)
+    tif.imwrite(outpath, event_masks.astype(np.float32),imagej=True)
+
+def export_event_video(components: dict,
+                       outpath: str,
+                       artifact_components: np.ndarray = None,
+                       t_start: int = None,
+                       t_stop: int = None,
+                       apply_mean_filter: bool = True,
+                       cthresh: float = 2.0,
+                       apply_masked_mean: bool = False,
+                       filter_method: str = 'constant',
+                       include_noise: bool = True) -> None:
+    components_copy = components.copy()
+    threshold = threshold_by_domains(components_copy, 
+                                     blur = 3, 
+                                     thresh_type = 'z-score', 
+                                     thresh_param = 7)
+    eig_mix = filter_components(components_copy['eig_mix'])
+    eig_mix = threshold_components(eig_mix, 
+                                   thresh_param = cthresh)
+    components_copy.update(threshold)
+    components_copy['eig_mix'] = eig_mix
+    rebuilt = rebuild(components_copy,
+                      artifact_components = artifact_components,
+                      t_start = t_start, 
+                      t_stop = t_stop,
+                      apply_mean_filter = apply_mean_filter,
+                      cthresh = cthresh,
+                      apply_masked_mean = apply_masked_mean,
+                      filter_method = filter_method,
+                      include_noise = include_noise)
+    tif.imwrite(outpath, rebuilt.astype(np.float32), imagej=True)

@@ -621,7 +621,6 @@ def rolling_mosaic_movie(domain_ROIs: np.ndarray,
     print('Saving Colorbar to:' + cbarpath)
     save_colorbar(scale, cbarpath, colormap=colormap)
 
-
 def threshold_by_domains(components: dict,
                    blur: int = 1,
                    min_mask_size: int = 64,
