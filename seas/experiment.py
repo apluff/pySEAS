@@ -11,6 +11,7 @@ from seas.hdf5manager import hdf5manager
 from seas.ica import project, filter_mean, rebuild_eigenbrain, threshold_by_domains, filter_components, threshold_components, rebuild
 from seas.signalanalysis import sort_noise, lag_n_autocorr
 from seas.waveletAnalysis import waveletAnalysis
+from seas.domains import get_domain_map
 
 from typing import List
 import tifffile as tif
@@ -513,3 +514,57 @@ def export_event_video(components: dict,
                       filter_method = filter_method,
                       include_noise = include_noise)
     tif.imwrite(outpath, rebuilt.astype(np.float32), imagej=True)
+
+def sort_components(components: dict):
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    #lag1 = components['lag1']
+    lag1_full = components['lag1_full']
+    noise = components['noise_components']
+
+    ev_sort = np.argsort(eig_mix.std(axis=0)) # Sorting by timecourse standard deviation.
+    #ev_sort = np.argsort(lag1) # Sorting by lag1 auto-correlation
+    eig_vec = eig_vec[:, ev_sort][:, ::-1]
+    eig_mix = eig_mix[:, ev_sort][:, ::-1]
+    #lag1 = lag1[ev_sort][::-1]
+    #noise = noise[ev_sort][::-1]
+    lag1_full = lag1_full[ev_sort][::-1]
+            
+    noise, cutoff = sort_noise(eig_mix.T)
+    components['noise_components'] = noise
+    components['cutoff'] = cutoff
+
+    components['eig_mix'] = eig_mix
+    components['timecourses'] = eig_mix.T
+
+    components['eig_vec'] = eig_vec
+    components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
+    components['lag1_full'] = lag1_full
+
+    # Recalculate domain map
+    domain_map = get_domain_map(components, map_only = False)
+    components.update(domain_map)
+
+    return components
+
+def flip_negative_components(components: dict):
+    n_components = components['n_components']
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+
+    # Track component orientation and ensure positive spatial patterns
+    flipped = np.ones(n_components)
+    for i in range(n_components):
+        # Find the index of maximum absolute value
+        max_idx = np.argmax(np.abs(eig_vec[:, i]))
+        # If that maximum value is negative, flip the component
+        if eig_vec[max_idx, i] < 0:
+            eig_vec[:, i] *= -1
+            eig_mix[:, i] *= -1
+            flipped[i] = -1
+
+    components['flipped'] = flipped
+    components['eig_vec'] = eig_vec
+    components['eig_mix'] = eig_mix
+
+    return components
