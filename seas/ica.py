@@ -14,6 +14,8 @@ from seas.video import rotate, save, rescale, play, scale_video
 
 import cv2
 from skimage.morphology import remove_small_objects
+from skimage import draw, measure
+from scipy import ndimage
 
 
 def project(vector: np.ndarray,
@@ -712,10 +714,11 @@ def threshold_by_domains(components: dict,
             for i in np.arange(eig_vec.shape[0]):
                 abs_z = np.abs(z_ROIs_vector[i])
                 mask[i, :] = abs_z > thresh_param
-                event = abs_z[mask[i, :]]
-                if schematic and event.size != 0:
-                    schem_thresh = np.percentile(event, 75) 
-                    mask[i, :] = abs_z > schem_thresh
+                # event = abs_z[mask[i, :]]
+                # Deprecated but produced an interesting result
+                # if schematic and event.size != 0:
+                #     schem_thresh = np.percentile(event, 75) 
+                #     mask[i, :] = abs_z > schem_thresh
         case 'percentile':
             flipped = components['flipped']
             # Flip ICs where necessary using flipped from dict
@@ -757,6 +760,24 @@ def threshold_by_domains(components: dict,
                 eigenbrain.flat[maskind] = filtered_float.flat
                 blurred = cv2.GaussianBlur(eigenbrain, (blur, blur), 0)
                 mask.T[index] = blurred.flat
+
+    if schematic:
+        event_schematics = np.zeros(shape, dtype=np.uint8)
+
+        for i in range(mask.shape[1]):
+            event_schematics.flat[maskind] = mask.T[i]
+            labelled, num_features = ndimage.label(eigenbrain, 
+                                                    structure = [[0,1,0],
+                                                                 [1,1,1],
+                                                                 [0,1,0]])
+            for j in range(num_features):
+                centroids = ndimage.center_of_mass(labelled, 
+                                                   labels = range(num_features))
+                event_size = np.sum(labelled, where = labelled == j)/j
+                schem_radius = np.sqrt(event_size/np.pi)
+                rr, cc = draw.disk(centroids[i], schem_radius, shape = shape)
+                event_schematics[rr, cc] = 255
+                mask.T[i] = event_schematics.flat
 
     mask_bool = mask.astype(bool)
     eig_vec[~mask_bool] = 0
