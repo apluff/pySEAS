@@ -710,10 +710,12 @@ def threshold_by_domains(components: dict,
             std_ROIs_vector = np.nanstd(eig_vec, axis=0)
             z_ROIs_vector = (eig_vec - mean_ROIs_vector)/std_ROIs_vector
             for i in np.arange(eig_vec.shape[0]):
-                mask[i, :] = np.abs(z_ROIs_vector[i]) > thresh_param
+                abs_z = np.abs(z_ROIs_vector[i])
+                mask[i, :] = abs_z > thresh_param
                 if schematic:
-                    schem_thresh = np.percentile(np.abs(z_ROIs_vector[i])[mask[i,:]],75) 
-                    mask[i, :] = np.abs(z_ROIs_vector[i]) > schem_thresh
+                    abs_z = abs_z[mask[i, :]]
+                    schem_thresh = np.percentile(abs_z, 75) 
+                    mask[i, :] = abs_z > schem_thresh
         case 'percentile':
             flipped = components['flipped']
             # Flip ICs where necessary using flipped from dict
