@@ -780,7 +780,7 @@ def threshold_by_domains(components: dict,
                                                    index = j)
                 int_centroids = [tuple(int(x) for x in y) for y in centroids]
                 event_size = np.sum(labelled, where = labelled == j)/j
-                schem_radius = np.sqrt(event_size/np.pi)
+                schem_radius = int(np.sqrt(event_size/np.pi))
                 rr, cc = draw.disk(int_centroids[i], schem_radius, shape = shape)
                 event_schematics[rr, cc] = 255
                 mask.T[i] = event_schematics.flat
