@@ -475,7 +475,7 @@ def export_event_masks(components: dict,
                                      thresh_type = thresh_type, 
                                      thresh_param = thresh_param)
     components_copy.update(threshold)
-    artifacts_bool = components_copy['artifact_components'].astype(np.bool)
+    artifacts_bool = components_copy['artifact_components'].astype(bool)
     event_components = components_copy['eig_vec'][:, ~artifacts_bool]
     event_masks = rebuild_eigenbrain(event_components,
                                      roimask = components_copy['roimask'], 
