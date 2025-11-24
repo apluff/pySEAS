@@ -712,8 +712,8 @@ def threshold_by_domains(components: dict,
             for i in np.arange(eig_vec.shape[0]):
                 abs_z = np.abs(z_ROIs_vector[i])
                 mask[i, :] = abs_z > thresh_param
-                if schematic and abs_z.size != 0:
-                    event = abs_z[mask[i, :]]
+                event = abs_z[mask[i, :]]
+                if schematic and event.size != 0:
                     schem_thresh = np.percentile(event, 75) 
                     mask[i, :] = abs_z > schem_thresh
         case 'percentile':
