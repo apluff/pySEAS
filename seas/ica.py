@@ -773,9 +773,10 @@ def threshold_by_domains(components: dict,
             for j in range(num_features):
                 centroids = ndimage.center_of_mass(labelled, 
                                                    labels = range(num_features))
+                int_centroids = [tuple(int(x) for x in y) for y in centroids]
                 event_size = np.sum(labelled, where = labelled == j)/j
                 schem_radius = np.sqrt(event_size/np.pi)
-                rr, cc = draw.disk(centroids[i], schem_radius, shape = shape)
+                rr, cc = draw.disk(int_centroids[i], schem_radius, shape = shape)
                 event_schematics[rr, cc] = 255
                 mask.T[i] = event_schematics.flat
 
