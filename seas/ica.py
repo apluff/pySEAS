@@ -763,18 +763,21 @@ def threshold_by_domains(components: dict,
 
     if schematic:
         event_schematics = np.zeros(shape, dtype=np.uint8)
+        eigenmask = np.zeros(shape, dtype=bool)
         eigenbrain = np.empty(shape)
         eigenbrain[:] = np.nan
 
         for i in range(mask.shape[1]):
-            eigenbrain.flat[maskind] = mask.T[i]
-            labelled, num_features = ndimage.label(eigenbrain, 
+            eigenmask.flat[maskind] = mask.T[i]
+            eigenbrain.flat[maskind] = eig_vec.T[i]
+            labelled, num_features = ndimage.label(eigenmask, 
                                                     structure = [[0,1,0],
                                                                  [1,1,1],
                                                                  [0,1,0]])
             for j in range(num_features):
-                centroids = ndimage.center_of_mass(labelled, 
-                                                   labels = range(num_features))
+                centroids = ndimage.center_of_mass(eigenbrain, 
+                                                   labels = labelled,
+                                                   index = j)
                 int_centroids = [tuple(int(x) for x in y) for y in centroids]
                 event_size = np.sum(labelled, where = labelled == j)/j
                 schem_radius = np.sqrt(event_size/np.pi)
