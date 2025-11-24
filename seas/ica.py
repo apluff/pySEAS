@@ -775,13 +775,13 @@ def threshold_by_domains(components: dict,
                                                                  [1,1,1],
                                                                  [0,1,0]])
             for j in range(num_features):
-                centroids = ndimage.center_of_mass(eigenbrain, 
+                centroid = ndimage.center_of_mass(eigenbrain, 
                                                    labels = labelled,
                                                    index = j)
-                int_centroids = [tuple(int(x) for x in y) for y in centroids]
+                int_centroid = tuple(int(x) for x in centroid)
                 event_size = np.sum(labelled, where = labelled == j)/j
                 schem_radius = int(np.sqrt(event_size/np.pi))
-                rr, cc = draw.disk(int_centroids[i], schem_radius, shape = shape)
+                rr, cc = draw.disk(int_centroid[i], schem_radius, shape = shape)
                 event_schematics[rr, cc] = 255
                 mask.T[i] = event_schematics.flat
 
