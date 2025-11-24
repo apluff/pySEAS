@@ -468,12 +468,14 @@ def export_event_masks(components: dict,
                        outpath: str,
                        blur: int = 3,
                        thresh_type: str = 'z-score',
-                       thresh_param: float = 7) -> None:
+                       thresh_param: float = 7,
+                       schematic: bool = False) -> None:
     components_copy = components.copy()
     threshold = threshold_by_domains(components_copy, 
                                      blur = blur, 
                                      thresh_type = thresh_type, 
-                                     thresh_param = thresh_param)
+                                     thresh_param = thresh_param,
+                                     schematic = schematic)
     components_copy.update(threshold)
     artifacts_bool = components_copy['artifact_components'].astype(bool)
     event_components = components_copy['eig_vec'][:, ~artifacts_bool]

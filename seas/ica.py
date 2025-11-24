@@ -641,7 +641,8 @@ def threshold_by_domains(components: dict,
                    blur: int = 1,
                    min_mask_size: int = 64,
                    thresh_type: str = 'max',
-                   thresh_param: float = None):
+                   thresh_param: float = None,
+                   schematic: bool = False):
     '''
     Function based on modified get_domain_map(). Thresholds ICs using a variety of methods for selective rebuild.
 
@@ -710,6 +711,9 @@ def threshold_by_domains(components: dict,
             z_ROIs_vector = (eig_vec - mean_ROIs_vector)/std_ROIs_vector
             for i in np.arange(eig_vec.shape[0]):
                 mask[i, :] = np.abs(z_ROIs_vector[i]) > thresh_param
+                if schematic:
+                    schem_thresh = np.percentile(np.abs(z_ROIs_vector[i])[mask[i,:]],75) 
+                    mask[i, :] = np.abs(z_ROIs_vector[i]) > schem_thresh
         case 'percentile':
             flipped = components['flipped']
             # Flip ICs where necessary using flipped from dict
