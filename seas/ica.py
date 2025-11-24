@@ -697,7 +697,7 @@ def threshold_by_domains(components: dict,
             signal_indices = np.where(artifact_components == 0)[0]
         # eig_vec = eig_vec[:, signal_indices] # Don't change number of ICs, we're updating back to dict
     
-    mask = np.zeros_like(eig_vec, dtype=bool)
+    mask = np.zeros_like(eig_vec, dtype = bool)
 
     match thresh_type:
         case 'max':
@@ -713,8 +713,8 @@ def threshold_by_domains(components: dict,
                 abs_z = np.abs(z_ROIs_vector[i])
                 mask[i, :] = abs_z > thresh_param
                 if schematic:
-                    abs_z = abs_z[mask[i, :]]
-                    schem_thresh = np.percentile(abs_z, 75) 
+                    event = abs_z[mask[i, :]]
+                    schem_thresh = np.percentile(event, 75) 
                     mask[i, :] = abs_z > schem_thresh
         case 'percentile':
             flipped = components['flipped']
