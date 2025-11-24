@@ -763,9 +763,11 @@ def threshold_by_domains(components: dict,
 
     if schematic:
         event_schematics = np.zeros(shape, dtype=np.uint8)
+        eigenbrain = np.empty(shape)
+        eigenbrain[:] = np.nan
 
         for i in range(mask.shape[1]):
-            event_schematics.flat[maskind] = mask.T[i]
+            eigenbrain.flat[maskind] = mask.T[i]
             labelled, num_features = ndimage.label(eigenbrain, 
                                                     structure = [[0,1,0],
                                                                  [1,1,1],
