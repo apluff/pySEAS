@@ -16,6 +16,7 @@ import cv2
 from skimage.morphology import remove_small_objects
 from skimage import draw, measure
 from scipy import ndimage
+import tifffile as tif
 
 
 def project(vector: np.ndarray,
@@ -762,32 +763,40 @@ def threshold_by_domains(components: dict,
                 mask.T[index] = blurred.flat
 
     if schematic:
-        event_schematics = np.zeros(shape, dtype=np.uint8)
-        eigenmask = np.zeros(shape, dtype=bool)
+        eigenmask = np.zeros(shape, dtype=np.uint8)
         eigenbrain = np.empty(shape)
         eigenbrain[:] = np.nan
 
         for i in range(mask.shape[1]):
+            event_schematic = np.zeros(shape, dtype=np.uint8)
             eigenmask.flat[maskind] = mask.T[i]
             eigenbrain.flat[maskind] = eig_vec.T[i]
-            labelled, num_features = ndimage.label(eigenmask, 
-                                                    structure = [[0,1,0],
-                                                                 [1,1,1],
-                                                                 [0,1,0]])
-            for j in range(num_features):
-                centroid = ndimage.center_of_mass(eigenbrain, 
-                                                   labels = labelled,
-                                                   index = j)
-                int_centroid = tuple(int(x) for x in centroid)
-                event_size = np.sum(labelled, where = labelled == j)/j
-                schem_radius = int(np.sqrt(event_size/np.pi))
-                rr, cc = draw.disk(int_centroid[i], schem_radius, shape = shape)
-                event_schematics[rr, cc] = 255
-                mask.T[i] = event_schematics.flat
-
+            # print("i is:", i)
+            # print(eigenmask)
+            if eigenmask.any():
+                # tif.imwrite("/home/apluff/dev/test_data/eigenmasks/sub-070_eigenmask"+str(i)+".tif", eigenmask, imagej=True)
+                labelled, num_features = ndimage.label(eigenmask)
+                # print(labelled)
+                # print("labelled contains values:", np.unique(labelled))
+                # print("num_features is:", num_features)
+                for j in range(1, num_features + 1):
+                    centroid = ndimage.center_of_mass(eigenmask, 
+                                                      labels = labelled,
+                                                      index = j)
+                    # print("j is:", j)
+                    # print("centroid is:", centroid)
+                    int_centroid = tuple(int(x) for x in centroid)
+                    event_size = np.sum(labelled, where = labelled == j)/j
+                    schem_radius = int(np.sqrt(event_size/np.pi))
+                    rr, cc = draw.disk(int_centroid, schem_radius, shape = shape)
+                    event_schematic[rr, cc] = 255
+                    # print("mask shape is:", mask.shape)
+                    # print("event_schematics shape is:", event_schematic.shape)
+                    mask.T[i] = event_schematic.flat[maskind]
+    
     mask_bool = mask.astype(bool)
     eig_vec[~mask_bool] = 0
-    
+
     output['thresh_masks'] = mask
     # output['thresh_vec'] = eig_vec
     output['eig_vec'] = eig_vec
