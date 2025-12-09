@@ -517,32 +517,38 @@ def export_event_video(components: dict,
                       include_noise = include_noise)
     tif.imwrite(outpath, rebuilt.astype(np.float32), imagej=True)
 
-def sort_components(components: dict):
+def sort_components(components: dict, sort_by_noise: bool = True):
     eig_vec = components['eig_vec']
     eig_mix = components['eig_mix']
-    #lag1 = components['lag1']
+    lag1 = components['lag1']
     lag1_full = components['lag1_full']
     noise = components['noise_components']
 
-    ev_sort = np.argsort(eig_mix.std(axis=0)) # Sorting by timecourse standard deviation.
-    #ev_sort = np.argsort(lag1) # Sorting by lag1 auto-correlation
+    if sort_by_noise:
+        ev_sort = np.argsort(lag1) # Sorting by lag1 auto-correlation
+    else:
+        ev_sort = np.argsort(eig_mix.std(axis=0)) # Sorting by timecourse standard deviation.
+    
     eig_vec = eig_vec[:, ev_sort][:, ::-1]
     eig_mix = eig_mix[:, ev_sort][:, ::-1]
-    #lag1 = lag1[ev_sort][::-1]
-    #noise = noise[ev_sort][::-1]
+    lag1 = lag1[ev_sort][::-1]
     lag1_full = lag1_full[ev_sort][::-1]
-            
-    noise, cutoff = sort_noise(eig_mix.T)
-    components['noise_components'] = noise
-    components['cutoff'] = cutoff
-
-    components['eig_mix'] = eig_mix
-    components['timecourses'] = eig_mix.T
-
+    noise = noise[ev_sort][::-1]
+    
+    # Recalculation calls (how PySEAS does it originally)
+    #noise, cutoff = sort_noise(eig_mix.T)
+    #components['cutoff'] = cutoff
+    #components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
+    
+    # Save sorted values
     components['eig_vec'] = eig_vec
-    components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
+    components['eig_mix'] = eig_mix
+    components['lag1'] = lag1
     components['lag1_full'] = lag1_full
-
+    components['noise_components'] = noise
+    # Derived
+    components['timecourses'] = eig_mix.T
+    
     # Recalculate domain map
     domain_map = get_domain_map(components, map_only = False)
     components.update(domain_map)
