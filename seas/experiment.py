@@ -523,7 +523,6 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     lag1 = components['lag1']
     lag1_full = components['lag1_full']
     noise = components['noise_components']
-    artifacts = components['artifact_components']
 
     if sort_by_noise:
         ev_sort = np.argsort(lag1) # Sorting by lag1 auto-correlation
@@ -535,7 +534,11 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     lag1 = lag1[ev_sort][::-1]
     lag1_full = lag1_full[ev_sort][::-1]
     noise = noise[ev_sort][::-1]
-    artifacts = artifacts[ev_sort][::-1]
+    
+    if 'artifact_components' in components:
+        artifacts = components['artifact_components']
+        artifacts = artifacts[ev_sort][::-1]
+        components['artifact_components'] = artifacts
     
     # Recalculation calls (how PySEAS does it originally)
     #noise, cutoff = sort_noise(eig_mix.T)
@@ -548,7 +551,7 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     components['lag1'] = lag1
     components['lag1_full'] = lag1_full
     components['noise_components'] = noise
-    components['artifact_components'] = artifacts
+    
     # Derived
     components['timecourses'] = eig_mix.T
     
