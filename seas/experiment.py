@@ -550,8 +550,14 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     components['timecourses'] = eig_mix.T
     
     # Recalculate domain map
-    domain_map = get_domain_map(components, map_only = False)
+    domain_map = get_domain_map(components, map_only = True)
     components.update(domain_map)
+
+    if 'ROI_timecourses' in components:
+        print('Removing unsorted ROI_timecourses.')
+        del components['ROI_timecourses']
+    else:
+        print('ROI_timecourses not found. Skipping deletion.')
 
     return components
 
