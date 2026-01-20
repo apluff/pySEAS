@@ -535,10 +535,10 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     lag1_full = lag1_full[ev_sort][::-1]
     noise = noise[ev_sort][::-1]
     
-    # Recalculation calls (how PySEAS does it originally)
-    #noise, cutoff = sort_noise(eig_mix.T)
-    #components['cutoff'] = cutoff
-    #components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
+    if 'artifact_components' in components:
+        artifacts = components['artifact_components']
+        artifacts = artifacts[ev_sort][::-1]
+        components['artifact_components'] = artifacts
     
     # Save sorted values
     components['eig_vec'] = eig_vec
@@ -546,12 +546,18 @@ def sort_components(components: dict, sort_by_noise: bool = True):
     components['lag1'] = lag1
     components['lag1_full'] = lag1_full
     components['noise_components'] = noise
-    # Derived
+    
+    # Derive from sorted values
     components['timecourses'] = eig_mix.T
     
-    # Recalculate domain map
-    domain_map = get_domain_map(components, map_only = True)
-    components.update(domain_map)
+    # Recalculation calls (how PySEAS does it originally)
+    #noise, cutoff = sort_noise(eig_mix.T)
+    #components['cutoff'] = cutoff
+    #components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
+
+    # Recalculate domain map (doesn't work for some reason)
+    # domain_map = get_domain_map(components, map_only = False)
+    # components.update(domain_map)
 
     if 'ROI_timecourses' in components:
         print('Removing unsorted ROI_timecourses.')
