@@ -127,11 +127,14 @@ def project(vector: np.ndarray,
         try:
             u, ev, _ = linalg.svd(vector, full_matrices=False)
         except ValueError:
-            # LAPACK error if matricies are too big
-            u, ev, _ = linalg.svd(vector,
-                                  full_matrices=False,
-                                  lapack_driver='gesvd')
-
+            try:
+                # LAPACK error if matricies are too big
+                u, ev, _ = linalg.svd(vector,
+                                      full_matrices=False,
+                                      lapack_driver='gesvd')
+            except ValueError:
+                u, ev, _ = np.linalg.svd(vector,
+                                         full_matrices=False)
         components['svd_eigval'] = ev
 
         #Get starting point for decomposition based on svd mutliplier * the approximate
