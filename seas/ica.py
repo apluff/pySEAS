@@ -744,6 +744,10 @@ def threshold_by_domains(components: dict,
             # Mask for all values above cutoff
             for i in np.arange(eig_vec.shape[0]):
                 mask[i, :] = flipped_threshold_vec[i] > cutoff_vector[i]
+        case 'max_value':
+            max_ROIs_vector = np.max(eig_vec, axis=0)
+            for i in np.arange(eig_vec.shape[0]):
+                mask[i, :] = eig_vec >= max_ROIs_vector
         case _:
             print("Threshold type is neither max nor percentile.")
 
