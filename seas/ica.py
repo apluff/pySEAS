@@ -748,7 +748,7 @@ def threshold_by_domains(components: dict,
         case 'max_value':
             max_ROIs_vector = np.max(eig_vec, axis=0)
             print(f'max_ROIs_vector shape is: {max_ROIs_vector.shape}')
-            for i in np.arange(eig_vec.shape[0]):
+            for i in np.arange(eig_vec.shape[1]):
                 mask[:, i] = eig_vec[:, i] >= max_ROIs_vector[i]
         case _:
             print("Threshold type is neither max nor percentile.")
