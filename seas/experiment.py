@@ -489,6 +489,9 @@ def export_event_masks(components: dict,
 def export_event_video(components: dict,
                        outpath: str,
                        artifact_components: np.ndarray = None,
+                       blur = 3,
+                       thresh_type = 'z-score',
+                       thresh_param = 7,
                        t_start: int = None,
                        t_stop: int = None,
                        apply_mean_filter: bool = True,
@@ -499,9 +502,9 @@ def export_event_video(components: dict,
                        binary_threshold: bool = False) -> None:
     components_copy = components.copy()
     threshold = threshold_by_domains(components_copy, 
-                                     blur = 3, 
-                                     thresh_type = 'z-score', 
-                                     thresh_param = 7)
+                                     blur = blur, 
+                                     thresh_type = thresh_type, 
+                                     thresh_param = thresh_param)
     eig_mix = filter_components(components_copy['eig_mix'])
     eig_mix = threshold_components(eig_mix, 
                                    thresh_param = cthresh)
