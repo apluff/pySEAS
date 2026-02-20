@@ -484,7 +484,7 @@ def rebuild(components: dict,
 
     if binary_threshold:
         data_binary = np.zeros(data_r)
-        data_binary(data_r > 0) = 255
+        data_binary[data_r > 0] = 255
         data_r = data_binary
 
     print('Done!')
