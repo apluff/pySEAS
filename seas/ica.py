@@ -728,9 +728,9 @@ def threshold_by_domains(components: dict,
             mean_ROIs_vector = np.nanmean(eig_vec, axis=0)
             std_ROIs_vector = np.nanstd(eig_vec, axis=0)
             z_ROIs_vector = (eig_vec - mean_ROIs_vector)/std_ROIs_vector
-            for i in np.arange(eig_vec.shape[0]):
-                abs_z = np.abs(z_ROIs_vector[i])
-                mask[i, :] = abs_z > thresh_param
+            for i in np.arange(eig_vec.shape[1]):
+                abs_z = np.abs(z_ROIs_vector[:, i])
+                mask[:, i] = abs_z > thresh_param
                 # event = abs_z[mask[i, :]]
                 # Deprecated but produced an interesting result
                 # if schematic and event.size != 0:
