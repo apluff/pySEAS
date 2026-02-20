@@ -451,21 +451,23 @@ def rebuild(components: dict,
     print('\nReconstructing....')
     data_r = np.dot(eig_vec[:, reconstruct_indices],
                     eig_mix[t_start:t_stop, reconstruct_indices].T).T
+    spatiotemporal_event_masks = data_r[data_r > 0]
 
     if apply_masked_mean:
-        spatiotemporal_event_masks = np.zeros_like(data_r)
-        spatiotemporal_event_masks[data_r > 0] = 255
-        spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
+        # Apply mean to masks only, zeroing unmasked pixels
+        # spatiotemporal_event_masks = np.zeros_like(data_r)
+        # spatiotemporal_event_masks[data_r > 0] = 255
+        # spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
         masks = components['thresh_masks']
         assert masks is not None, \
         "Masks have not been assigned to dictionary"
-        # Apply mean to masks only, zeroing unmasked pixels
         if apply_mean_filter:
             combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
             mean_to_add = np.zeros_like(data_r)
             mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
             mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
-            data_r[spatiotemporal_event_masks] += mean_to_add
+            data_r += mean_to_add
+            data_r[~spatiotemporal_event_masks] = 0
 
         else:
             print('Not filtering mean')
@@ -473,7 +475,8 @@ def rebuild(components: dict,
             mean_to_add = np.zeros_like(data_r)
             mean_filtered = None
             mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
-            data_r[spatiotemporal_event_masks] += mean_to_add
+            data_r += mean_to_add
+            data_r[~spatiotemporal_event_masks] = 0
     else:
         # Run original readdition of mean
         if apply_mean_filter:
