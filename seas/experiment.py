@@ -495,7 +495,8 @@ def export_event_video(components: dict,
                        cthresh: float = 2.0,
                        apply_masked_mean: bool = False,
                        filter_method: str = 'constant',
-                       include_noise: bool = True) -> None:
+                       include_noise: bool = True,
+                       binary_threshold: bool = False) -> None:
     components_copy = components.copy()
     threshold = threshold_by_domains(components_copy, 
                                      blur = 3, 
@@ -514,7 +515,8 @@ def export_event_video(components: dict,
                       cthresh = cthresh,
                       apply_masked_mean = apply_masked_mean,
                       filter_method = filter_method,
-                      include_noise = include_noise)
+                      include_noise = include_noise,
+                      binary_threshold = binary_threshold)
     tif.imwrite(outpath, rebuilt.astype(np.float32), imagej=True)
 
 def sort_components(components: dict, sort_by_noise: bool = True):

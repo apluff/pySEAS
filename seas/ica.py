@@ -323,6 +323,7 @@ def rebuild(components: dict,
             apply_component_threshold: bool = False,
             cthresh: float = 2.0,
             apply_masked_mean: bool = False,
+            binary_threshold: bool = False,
             filter_method: str = 'butterworth_highpass',
             fps: float = 7.5,
             include_noise: bool = True):
@@ -480,6 +481,11 @@ def rebuild(components: dict,
             print('Not filtering mean')
             mean_filtered = None
             data_r += mean[t_start:t_stop, None]
+
+    if binary_threshold:
+        data_binary = np.zeros(data_r)
+        data_binary(data_r > 0) = 255
+        data_r = data_binary
 
     print('Done!')
 
