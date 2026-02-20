@@ -465,7 +465,7 @@ def rebuild(components: dict,
             mean_to_add = np.zeros_like(data_r)
             mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
             mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
-            data_r += mean_to_add[spatiotemporal_event_masks]
+            data_r[spatiotemporal_event_masks] += mean_to_add
 
         else:
             print('Not filtering mean')
@@ -473,7 +473,7 @@ def rebuild(components: dict,
             mean_to_add = np.zeros_like(data_r)
             mean_filtered = None
             mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
-            data_r += mean_to_add[spatiotemporal_event_masks]
+            data_r[spatiotemporal_event_masks] += mean_to_add
     else:
         # Run original readdition of mean
         if apply_mean_filter:
