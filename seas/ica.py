@@ -451,13 +451,13 @@ def rebuild(components: dict,
     print('\nReconstructing....')
     data_r = np.dot(eig_vec[:, reconstruct_indices],
                     eig_mix[t_start:t_stop, reconstruct_indices].T).T
-    spatiotemporal_event_masks = data_r[data_r > 0]
+    # spatiotemporal_event_masks = data_r[data_r > 0]
 
     if apply_masked_mean:
         # Apply mean to masks only, zeroing unmasked pixels
-        # spatiotemporal_event_masks = np.zeros_like(data_r)
-        # spatiotemporal_event_masks[data_r > 0] = 255
-        # spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
+        spatiotemporal_event_masks = np.zeros_like(data_r)
+        spatiotemporal_event_masks[data_r > 0] = 255
+        spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
         masks = components['thresh_masks']
         assert masks is not None, \
         "Masks have not been assigned to dictionary"
