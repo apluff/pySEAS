@@ -505,6 +505,203 @@ def rebuild(components: dict,
 
     return data_r
 
+def rebuild_split_components(components: dict,
+            artifact_components: np.ndarray = None,
+            t_start: int = None,
+            t_stop: int = None,
+            apply_mean_filter: bool = True,
+            mlow: float = 0.5,
+            mhigh: float = 1.0,
+            apply_component_filter: bool = False,
+            chigh: float = 1.0,
+            apply_component_threshold: bool = False,
+            cthresh: float = 2.0,
+            apply_masked_mean: bool = False,
+            binary_threshold: bool = False,
+            filter_method: str = 'butterworth_highpass',
+            fps: float = 7.5,
+            include_noise: bool = True):
+    '''
+    Rebuild original vector space based on a subset of principal 
+    components of the data.  Eigenvectors to use are specified where 
+    artifact_components == False.  Returns a matrix data_r, the reconstructed 
+    vector projected back into its original dimensions.
+
+    Arguments:
+        components: 
+            The components from ica_project.  artifact_components must be assigned to components before rebuilding, or passed in explicitly
+        artifact_components:
+            Overrides the artifact_components key in components, to rebuild all components except those specified
+        t_start: 
+            The frame to start rebuilding the movie at.  If none is provided, the rebuilt movie starts at the first frame
+        t_stop: 
+            The frame to stop rebuilding the movie at.  If none is provided, the rebuilt movie ends at the last frame
+        apply_mean_filter:
+            Whether to apply a filter to the mean signal.
+        mlow:
+            A float determining the highpass cutoff for the mean filter, if used.
+        mhigh:
+            A float determining the lowpass cutoff for the mean filter, if used.
+        apply_component_filter:
+            Whether to apply a butterworth_lowpass filter to IC timecourses before rebuild.
+        chigh:
+            A float determining the lowpass cutoff for the component filter, if used.
+        apply_component_threshold:
+            Whether to apply a z-score threshold on the component timeseries.
+        cthresh:
+            A float determining the z-score threshold for the component threshold, if used.
+        apply_masked_mean:
+            If True, only re-adds the mean signal to pixels where at least one IC is defined. To be used for thresholded ICs.
+        filter_method:
+            The filter method to apply to the mean. Choose from 'butterworth_bandpass', 'butterworth_lowpass', 'butterworth_highpass', or 'constant'. Behaviour for 'wavelet' as yet undefined.
+        fps:
+            A float determining the fps for the source video.
+        include_noise:
+            Whether to include noise components when rebuilding.  If noise_components should not be included in the rebuilt movie, set this to False
+
+    Returns:
+        data_r: The ICA filtered video.
+    '''
+    print('\nRebuilding Data from Selected ICs\n-----------------------')
+
+    if type(components) is str:
+        f = hdf5manager(components)
+        components = f.load()
+
+    assert type(components) is dict, 'Components were not in format expected'
+
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    roimask = components['roimask']
+    shape = components['shape']
+    mean = components['mean']
+    n_components = components['n_components']
+    dtype = np.float32
+
+    t, x, y = shape
+    l = eig_vec[:, 0].size
+
+    if mean.ndim > 1:  # why is there sometimes an extra dimension added?
+        mean = mean.flatten()
+
+    if artifact_components is None:
+        artifact_components = components['artifact_components']
+    elif artifact_components == 'none':
+        print('including all components')
+        artifact_components = np.zeros(n_components)
+    
+    if ((not include_noise) and ('noise_components' in components.keys())):
+        print('Not rebuilding noise components')
+        artifact_components += components['noise_components']
+        artifact_components[np.where(artifact_components > 1)] = 1
+
+    reconstruct_indices = np.where(artifact_components == 0)[0]
+
+    if reconstruct_indices.size == 0:
+        print('No indices were selected for reconstruction.')
+        print('Returning empty matrix...')
+        data_r = np.zeros((t, x, y), dtype='uint8')
+        data_r = data_r[t_start:t_stop]
+        return data_r
+
+    n_components = reconstruct_indices.size
+
+    # Make sure vector extracted properly matches the roimask given.
+    if roimask is None:
+        assert eig_vec[:, 0].size == x * y, (
+            "Eigenvector size isn't compatible with the shape of the output "
+            'matrix')
+    else:
+        maskind = np.where(roimask.flat == 1)
+        assert eig_vec[:,0].size == maskind[0].size, \
+        "Eigenvector size is not compatible with the masked region's size"
+
+    # Filter component timecourses
+    if apply_component_filter:
+        lpf_eig_mix = filter_components(eig_mix, fps=fps, high_cutoff=chigh)
+        eig_mix = lpf_eig_mix
+
+    # Threshold component timecourses
+    if apply_component_threshold:
+        thresh_eig_mix = threshold_components(eig_mix, thresh_param=cthresh)
+        eig_mix = thresh_eig_mix
+
+    if (t_start == None):
+        t_start = 0
+
+    if (t_stop == None):
+        t_stop = eig_mix.shape[0]
+
+    if (t_stop - t_start) is not shape[0]:
+        shape = (t_stop - t_start, shape[1], shape[2])
+
+    t = t_stop - t_start
+
+    print('\nRebuilding ICA...')
+    print('number of elements included:', n_components)
+    print('eig_vec:', eig_vec.shape)
+    print('eig_mix:', eig_mix.shape)
+
+    print('\nReconstructing....')
+    data_c = []
+    t = 1
+    for i in reconstruct_indices:
+        data_r = np.dot(eig_vec[:, i],
+                        eig_mix[t_start:t_stop, i].T).T
+        # spatiotemporal_event_masks = data_r[data_r > 0]
+
+        if apply_masked_mean:
+            # Apply mean to masks only, zeroing unmasked pixels
+            spatiotemporal_event_masks = np.zeros_like(data_r)
+            spatiotemporal_event_masks[data_r > 0] = 255
+            spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
+            masks = components['thresh_masks']
+            assert masks is not None, \
+            "Masks have not been assigned to dictionary"
+            if apply_mean_filter:
+                combined_mask = np.any(masks[:, i], axis=1)
+                mean_to_add = np.zeros_like(data_r)
+                mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
+                mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
+                data_r += mean_to_add
+                data_r[~spatiotemporal_event_masks] = 0
+
+            else:
+                print('Not filtering mean')
+                combined_mask = np.any(masks[:, i], axis=1)
+                mean_to_add = np.zeros_like(data_r)
+                mean_filtered = None
+                mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
+                data_r += mean_to_add
+                data_r[~spatiotemporal_event_masks] = 0
+        else:
+            # Run original readdition of mean
+            if apply_mean_filter:
+                mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
+                data_r += mean_filtered[t_start:t_stop, None]
+
+            else:
+                print('Not filtering mean')
+                mean_filtered = None
+                data_r += mean[t_start:t_stop, None]
+
+        if binary_threshold:
+            data_binary = np.zeros(data_r)
+            data_binary[data_r > 0] = 255
+            data_r = data_binary
+
+        print('Done!')
+
+        if roimask is None:
+            data_r = data_r.reshape(shape)
+        else:
+            reconstructed = np.zeros((x * y, t), dtype=dtype)
+            reconstructed[maskind] = data_r.swapaxes(0, 1)
+            reconstructed = reconstructed.swapaxes(0, 1)
+            data_r = reconstructed.reshape(t, x, y)
+            data_c.append(data_r)
+    data_r = np.stack(data_c, axis=0)
+    return data_r
 
 def approximate_svd_linearity_transition(eig_val: np.ndarray):
     '''
