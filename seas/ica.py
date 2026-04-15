@@ -154,6 +154,7 @@ def project(vector: np.ndarray,
                           w_init=w_init)
 
             eig_vec = ica.fit_transform(vector)
+            print("n_iter:" , ica.n_iter_)
             eig_mix = ica.mixing_
 
             noise, cutoff = sort_noise(eig_mix.T)
