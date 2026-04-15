@@ -499,6 +499,9 @@ def rebuild(components: dict,
         data_r = data_r.reshape(shape)
     else:
         reconstructed = np.zeros((x * y, t), dtype=dtype)
+        print(f'data_r shape is: {data_r.shape}')
+        print(f'reconstructed shape is: {reconstructed.shape}')
+        print(f'maskind is: {maskind}')
         reconstructed[maskind] = data_r.swapaxes(0, 1)
         reconstructed = reconstructed.swapaxes(0, 1)
         data_r = reconstructed.reshape(t, x, y)
@@ -643,11 +646,15 @@ def rebuild_split_components(components: dict,
     print('eig_mix:', eig_mix.shape)
 
     print('\nReconstructing....')
-    data_c = []
-    t = 1
+    print(f'reconstruct_indices are: {reconstruct_indices}')
     for i in reconstruct_indices:
-        data_r = np.dot(eig_vec[:, i],
-                        eig_mix[t_start:t_stop, i].T).T
+        print(f'i is: {i}')
+        print(f'Selected eig_vec shape is: {eig_vec[:, i].shape}')
+        print(f'Selected eig_mix shape is: {eig_mix[t_start:t_stop, i].T.shape}')
+        #data_r = np.dot(eig_vec[:, i],
+        #                eig_mix[t_start:t_stop, i].T).T
+        data_rl = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
+        data_r = np.stack(data_rl, axis=0)
         # spatiotemporal_event_masks = data_r[data_r > 0]
 
         if apply_masked_mean:
@@ -659,10 +666,11 @@ def rebuild_split_components(components: dict,
             assert masks is not None, \
             "Masks have not been assigned to dictionary"
             if apply_mean_filter:
-                combined_mask = np.any(masks[:, i], axis=1)
+                combined_mask = masks[:, i]
                 mean_to_add = np.zeros_like(data_r)
                 mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
-                mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
+                #mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
+                mean_to_add = 0.028687261
                 data_r += mean_to_add
                 data_r[~spatiotemporal_event_masks] = 0
 
@@ -696,12 +704,20 @@ def rebuild_split_components(components: dict,
             data_r = data_r.reshape(shape)
         else:
             reconstructed = np.zeros((x * y, t), dtype=dtype)
+            print(f'data_r shape is: {data_r.shape}')
+            print(f'reconstructed shape is: {reconstructed.shape}')
+            print(f'maskind shape: {maskind}')
             reconstructed[maskind] = data_r.swapaxes(0, 1)
             reconstructed = reconstructed.swapaxes(0, 1)
             data_r = reconstructed.reshape(t, x, y)
-            data_c.append(data_r)
-    data_r = np.stack(data_c, axis=0)
-    return data_r
+        comp_out = 'sub-071_rec-baseline_run-02_id-' + str(i) + '.tif'
+        data_r[data_r < 0.0] = 0.0
+        data_r = data_r*255
+        data_r[data_r > 255.0] = 255.0
+        data_r = data_r.astype(np.uint8)
+        #data_r[data_r > 0] = 255
+        tif.imwrite('/QRISdata/Q5451/temp/tests/pyseas_split_components/' + comp_out, data_r,compression='lzw', imagej=True)
+            
 
 def approximate_svd_linearity_transition(eig_val: np.ndarray):
     '''

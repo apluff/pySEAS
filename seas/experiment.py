@@ -506,8 +506,8 @@ def export_event_video(components: dict,
                                      thresh_type = thresh_type, 
                                      thresh_param = thresh_param)
     eig_mix = filter_components(components_copy['eig_mix'])
-    eig_mix = threshold_components(eig_mix, 
-                                   thresh_param = cthresh)
+    #eig_mix = threshold_components(eig_mix, 
+    #                               thresh_param = cthresh)
     components_copy.update(threshold)
     components_copy['eig_mix'] = eig_mix
     rebuilt = rebuild(components_copy,
