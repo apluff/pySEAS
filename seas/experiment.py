@@ -588,8 +588,9 @@ def flip_negative_components(components: dict):
             eig_mix[:, i] *= -1
             flipped[i] = -1
 
-    components['flipped'] = flipped
-    components['eig_vec'] = eig_vec
-    components['eig_mix'] = eig_mix
+    output = {}
+    output['flipped'] = flipped
+    output['eig_vec'] = eig_vec
+    output['eig_mix'] = eig_mix
 
-    return components
+    return output
