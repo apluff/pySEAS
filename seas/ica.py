@@ -1493,3 +1493,15 @@ def filter_comparison(components: dict,
          resize_factor=1 / 2,
          save_cbar=True,
          overlay=overlay)
+
+def dynamic_threshold(components: dict) -> dict:
+    eig_vec = components['eig_vec']
+    output = {}
+    min = np.min(eig_vec, axis=0)
+    max = np.max(eig_vec, axis=0)
+    assert max > 0, "eig_vec distribution is deviant, max is less than 0."
+    assert min < 0, "eig_vec distribution is deviant, min is greater than 0."
+    output['flipped'] = np.where(np.abs(min) > max, 1, -1)
+    output['threshold'] = np.where(np.abs(min) > max, max, min)
+
+    return output
