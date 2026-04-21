@@ -1519,7 +1519,7 @@ def dynamic_threshold(components: dict) -> dict:
     # Good to check our flipped values remain consistent vs other calculations
     if 'flipped' in components.keys():
         print("flipped already exists in components dict.")
-        assert flipped == components['flipped']
+        assert np.all(flipped == components['flipped'])
     else:
         output['flipped'] = flipped
     output['component_thresholds'] = thresholds
@@ -1543,8 +1543,8 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
 
         # We calculate the peaks and bounds of each timecourse distribution
         peak = (bins[k] + bins[k + 1]) / 2
-        min = np.min(bins)
-        max = np.max(bins)
+        min = np.min(timecourses[i])
+        max = np.max(timecourses[i])
         assert np.all(max > 0), "Timecourse {i} distribution is deviant, max is less than 0."
         assert np.all(min < 0), "Timecourse {i} distribution is deviant, min is greater than 0."
         
@@ -1553,7 +1553,7 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
             short_tail = max
         else:
             short_tail = min
-        # We work in normalised polarity now for clarity
+        # We work in normalised polarity now for clarity (assume short tail negative)
         flip = -1 * np.sign(short_tail)
         timecourse = flip * timecourses[i].copy()
         noise_mean = flip * peak
@@ -1573,9 +1573,14 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
     # Good to check our flipped values remain consistent vs any previous 
     # calculations from other methods.
     if 'flipped' in components.keys():
+        non_artifact_indices = np.where(components['artifact_components'] == False)
+        non_noise_indices = np.where(components['noise_components'] == False)
+        signal_indices = np.intersect1d(non_artifact_indices, non_noise_indices)
         print("flipped already exists in components dict.")
-        assert flipped == components['flipped']
+        assert np.all(flipped == components['flipped'])
     else:
         output['flipped'] = flipped
+    
+    output['flipped'] = flipped
     output['timecourse_thresholds'] = thresholds
     return output
