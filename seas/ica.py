@@ -1495,13 +1495,84 @@ def filter_comparison(components: dict,
          overlay=overlay)
 
 def dynamic_threshold(components: dict) -> dict:
+    # Returns a pySEAS-compatible dictionary entry for the threshold values as
+    # calculated per "Dynamic Threshold" method in Weiser et al. 2023. These
+    # thresholds are recorded in the polarity relative to the original ICA
+    # results (ie; not flipped). 
+
     eig_vec = components['eig_vec']
     output = {}
-    min = np.min(eig_vec, axis=0)
-    max = np.max(eig_vec, axis=0)
-    assert max > 0, "eig_vec distribution is deviant, max is less than 0."
-    assert min < 0, "eig_vec distribution is deviant, min is greater than 0."
-    output['flipped'] = np.where(np.abs(min) > max, 1, -1)
-    output['threshold'] = np.where(np.abs(min) > max, max, min)
+    
+    # We calculate the bounds of the eig_vec distribution
+    min = np.min(eig_vec, axis = 0)
+    max = np.max(eig_vec, axis = 0)
 
+    # And check the distribution is centred around zero
+    assert np.all(max > 0), "eig_vec distribution is deviant, max is less than 0."
+    assert np.all(min < 0), "eig_vec distribution is deviant, min is greater than 0."
+    
+    # Then we identify return short tail as threshold, adjusting for flipping by ICA
+    short_tail = np.where(np.abs(min) > max, max, min)
+    flipped = -1 * np.sign(short_tail)
+    thresholds = flipped * short_tail
+
+    # Good to check our flipped values remain consistent vs other calculations
+    if 'flipped' in components.keys():
+        assert flipped == components['flipped']
+    else:
+        output['flipped'] = flipped
+    output['component_thresholds'] = thresholds
+    return output
+
+def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
+    # Returns a pySEAS-compatible dictionary entry for the threshold values as
+    # calculated per "Estimating binary neural activity" method in
+    # Suarez et al. 2023. These thresholds are recorded in the polarity 
+    # relative to the original ICA results (ie; not flipped).
+
+    timecourses = components['eig_vec'].T
+    n_components = timecourses.shape[0]
+    output = {}
+    
+    flipped = []
+    thresholds = []
+    for i in range(n_components):
+        counts, bins = np.histogram(timecourses[i], bins = 'fd')
+        k = np.argmax(counts)
+
+        # We calculate the peaks and bounds of each timecourse distribution
+        peak = (bins[k] + bins[k + 1]) / 2
+        min = np.min(bins)
+        max = np.max(bins)
+        assert np.all(max > 0), "Timecourse {i} distribution is deviant, max is less than 0."
+        assert np.all(min < 0), "Timecourse {i} distribution is deviant, min is greater than 0."
+        
+        # And check the polarity of the distribution as returned by ICA
+        if np.abs(min) > max:
+            short_tail = max
+        else:
+            short_tail = min
+
+        # We work in normalised polarity for now for clarity
+        flip = -1 * np.sign(short_tail)
+        timecourse = flip * timecourses[i].copy()
+        noise_mean = flip * peak
+
+        # And calculate the noise std by extrapolating the short tail.
+        noise_deltas = np.where(timecourse < noise_mean, 
+                                noise_mean - timecourses[i], 
+                                np.nan)
+        noise_deltas = noise_deltas(~np.isnan(noise_deltas))
+        noise_distr = np.concat(noise_deltas, -1 * noise_deltas)
+        noise_std = np.std(noise_distr)
+        
+        flipped[i] = flip
+        thresholds[i] = flip * (noise_mean + thresh * noise_std)
+    
+    # Good to check our flipped values remain consistent vs other calculations
+    if 'flipped' in components.keys():
+        assert flipped == components['flipped']
+    else:
+        output['flipped'] = flipped
+    output['timecourse_thresholds'] = thresholds
     return output
