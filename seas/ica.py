@@ -1514,10 +1514,11 @@ def dynamic_threshold(components: dict) -> dict:
     # Then we identify return short tail as threshold, adjusting for flipping by ICA
     short_tail = np.where(np.abs(min) > max, max, min)
     flipped = -1 * np.sign(short_tail)
-    thresholds = flipped * short_tail
+    thresholds = short_tail
 
     # Good to check our flipped values remain consistent vs other calculations
     if 'flipped' in components.keys():
+        print("flipped already exists in components dict.")
         assert flipped == components['flipped']
     else:
         output['flipped'] = flipped
@@ -1530,12 +1531,12 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
     # Suarez et al. 2023. These thresholds are recorded in the polarity 
     # relative to the original ICA results (ie; not flipped).
 
-    timecourses = components['eig_vec'].T
+    timecourses = components['eig_mix'].T
     n_components = timecourses.shape[0]
     output = {}
     
-    flipped = []
-    thresholds = []
+    flipped = np.ones(n_components)
+    thresholds = np.zeros(n_components)
     for i in range(n_components):
         counts, bins = np.histogram(timecourses[i], bins = 'fd')
         k = np.argmax(counts)
@@ -1552,25 +1553,27 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
             short_tail = max
         else:
             short_tail = min
-
-        # We work in normalised polarity for now for clarity
+        # We work in normalised polarity now for clarity
         flip = -1 * np.sign(short_tail)
         timecourse = flip * timecourses[i].copy()
         noise_mean = flip * peak
-
-        # And calculate the noise std by extrapolating the short tail.
+        # And calculate the noise std by extrapolating the short tail
         noise_deltas = np.where(timecourse < noise_mean, 
-                                noise_mean - timecourses[i], 
+                                noise_mean - timecourse, 
                                 np.nan)
-        noise_deltas = noise_deltas(~np.isnan(noise_deltas))
-        noise_distr = np.concat(noise_deltas, -1 * noise_deltas)
+        noise_deltas = noise_deltas[~np.isnan(noise_deltas)]
+        print(noise_deltas.shape)
+        noise_distr = np.concatenate((noise_deltas, -1 * noise_deltas))
         noise_std = np.std(noise_distr)
         
         flipped[i] = flip
+        # Return to original polarity to record threshold
         thresholds[i] = flip * (noise_mean + thresh * noise_std)
     
-    # Good to check our flipped values remain consistent vs other calculations
+    # Good to check our flipped values remain consistent vs any previous 
+    # calculations from other methods.
     if 'flipped' in components.keys():
+        print("flipped already exists in components dict.")
         assert flipped == components['flipped']
     else:
         output['flipped'] = flipped
