@@ -1581,6 +1581,6 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
     else:
         output['flipped'] = flipped
     
-    output['flipped'] = flipped
+    #output['flipped'] = flipped
     output['timecourse_thresholds'] = thresholds
     return output
