@@ -1172,6 +1172,25 @@ def threshold_by_domains(components: dict,
             print(f'max_ROIs_vector shape is: {max_ROIs_vector.shape}')
             for i in np.arange(eig_vec.shape[1]):
                 mask[:, i] = eig_vec[:, i] >= max_ROIs_vector[i]
+        case 'dynamic':
+            # We calculate the bounds of the eig_vec distribution
+            min = np.min(eig_vec, axis = 0)
+            max = np.max(eig_vec, axis = 0)
+
+            # And check the distribution is centred around zero
+            assert np.all(max > 0), "eig_vec distribution is deviant, max is less than 0."
+            assert np.all(min < 0), "eig_vec distribution is deviant, min is greater than 0."
+            
+            # Then we identify return short tail as threshold, adjusting for flipping by ICA
+            short_tail = np.where(np.abs(min) > max, max, min)
+            flipped = -1 * np.sign(short_tail)
+            thresholds = -1 * short_tail
+            
+            flipped_vec = np.multiply(flipped, eig_vec)
+            flipped_thresholds = np.multiply(flipped, thresholds)
+
+            for i in np.arange(eig_vec.shape[0]):
+                mask[i, :] = flipped_vec[i] > flipped_thresholds[i]
         case _:
             print("Threshold type is neither max nor percentile.")
 
@@ -1583,4 +1602,55 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
     
     #output['flipped'] = flipped
     output['timecourse_thresholds'] = thresholds
+    return output
+
+def rebuilt_noise_SD_threshold(components: dict, thresh: float = 2) -> dict:
+    # Returns a pySEAS-compatible dictionary entry for the threshold values as
+    # calculated per "Dynamic Threshold" method in Weiser et al. 2023, but
+    # applied to rebuilt timecourses (+ original frame-wise mean). These
+    # thresholds are recorded in the polarity of the original signal (ie;
+    # all positive). 
+
+    eig_vec = components['eig_vec']
+    timecourses = components['eig_mix'].T
+    frame_mean = components['mean']
+    n_components = timecourses.shape[0]
+    output = {}
+    
+    thresholds = np.zeros(n_components)
+    binary_timecourses = np.zeros_like(timecourses, dtype = np.int8)
+    # We calculate the max of eig_vec distribution and rebuild our timecourses
+    max_weights = np.max(eig_vec, axis = 0)
+    rebuilt_timecourses = max_weights[:, np.newaxis] * timecourses + frame_mean
+    
+    for i in range(n_components):
+        timecourse = rebuilt_timecourses[i]
+        counts, bins = np.histogram(timecourse, bins = 'fd')
+        k = np.argmax(counts)
+
+        # We calculate the peaks and bounds of each timecourse distribution
+        noise_mean = (bins[k] + bins[k + 1]) / 2
+        min = np.min(timecourse)
+        max = np.max(timecourse)
+        assert np.all(max > 0), \
+            "Timecourse index={i} distribution is deviant, max is less than 0."
+        assert np.all(min < noise_mean), \
+            "Timecourse index={i} distribution is deviant, min >= noise peak."
+        
+        # We work in normalised polarity because timecourse has been rebuilt
+        # and calculate the noise std by extrapolating the one-sided
+        # distribution below the noise mean.
+        noise_deltas = np.where(timecourse < noise_mean, 
+                                noise_mean - timecourse, 
+                                np.nan)
+        noise_deltas = noise_deltas[~np.isnan(noise_deltas)]
+        noise_distr = np.concatenate((noise_deltas, -1 * noise_deltas))
+        noise_std = np.std(noise_distr)
+        
+        threshold = noise_mean + thresh * noise_std
+        binary_timecourses[i] = np.where(timecourse >= threshold)
+        timecourse[timecourse >= thresholds[i]]
+
+    output['rebuilt_timecourse_thresholds'] = thresholds
+    output['binary_threshold_timecourses'] = binary_timecourses.T
     return output
