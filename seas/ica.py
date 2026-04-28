@@ -1189,8 +1189,8 @@ def threshold_by_domains(components: dict,
             flipped_vec = np.multiply(flipped, eig_vec)
             flipped_thresholds = np.multiply(flipped, thresholds)
 
-            for i in np.arange(eig_vec.shape[0]):
-                mask[i, :] = flipped_vec[i] > flipped_thresholds[i]
+            for i in np.arange(eig_vec.shape[1]):
+                mask[:, i] = flipped_vec[:, i] > flipped_thresholds[i]
         case _:
             print("Threshold type is neither max nor percentile.")
 
@@ -1648,7 +1648,7 @@ def rebuilt_noise_SD_threshold(components: dict, thresh: float = 2) -> dict:
         noise_std = np.std(noise_distr)
         
         threshold = noise_mean + thresh * noise_std
-        binary_timecourses[i] = np.where(timecourse >= threshold)
+        binary_timecourses[i] = np.where(timecourse >= threshold, 1, 0)
         timecourse[timecourse >= thresholds[i]]
 
     output['rebuilt_timecourse_thresholds'] = thresholds
