@@ -1192,7 +1192,7 @@ def threshold_by_domains(components: dict,
             for i in np.arange(eig_vec.shape[1]):
                 mask[:, i] = flipped_vec[:, i] > flipped_thresholds[i]
         case _:
-            print("Threshold type is neither max nor percentile.")
+            print(f"Threshold type {thresh_type} is not recognised.")
 
     # Filter small mask ROIs and smooth using blur
     if blur:
@@ -1533,7 +1533,7 @@ def dynamic_threshold(components: dict) -> dict:
     # Then we identify return short tail as threshold, adjusting for flipping by ICA
     short_tail = np.where(np.abs(min) > max, max, min)
     flipped = -1 * np.sign(short_tail)
-    thresholds = short_tail
+    thresholds = -1 * short_tail
 
     # Good to check our flipped values remain consistent vs other calculations
     if 'flipped' in components.keys():
