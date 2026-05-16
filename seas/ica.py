@@ -18,44 +18,219 @@ from skimage import draw, measure
 from scipy import ndimage
 import tifffile as tif
 
+# Refactor additions
+from dataclasses import dataclass
+from typing import Dict
 
-def project(vector: np.ndarray,
-            shape: Tuple[int, int, int],
-            roimask: np.ndarray = None,
-            n_components: int = None,
-            crop_excess_noise: bool = True,
-            svd_multiplier: float = 5,
-            calc_residuals: bool = True,
-            max_iter: int = 1000):
+
+@dataclass
+class PyseasRecord:
+    mean:  np.ndarray
+    roimask: np.ndarray
+    shape: Tuple[int, int, int]
+    eig_mix: np.ndarray
+    timecourses: np.ndarray
+    eig_vec: np.ndarray
+    n_components: int
+    project_meta: Dict
+    lag1: np.ndarray
+    lag1_full: np.ndarray
+    noise_components: np.ndarray
+    cutoff: float
+    svd_cutoff: int
+    svd_multiplier: int
+    increased_cutoff: int
+    flipped: np.ndarray = None
+
+    def save_creation_metadata(self, n_components: int, time_elapsed: float):
+        # Save filter metadata information about how and when movie was filtered in dictionary.
+        project_meta = {}
+        project_meta['time_elapsed'] = time_elapsed
+        project_meta['date'] = \
+            datetime.now().strftime('%Y%m%d')[2:]
+        fmt = '%Y-%m-%dT%H:%M:%SZ'
+        project_meta['tstmp'] = \
+            datetime.now().strftime(fmt)
+        project_meta['n_components'] = n_components
+        self.project_meta = project_meta
+
+
+@dataclass
+class PyseasConfig:
     '''
-    Apply an ica decomposition to the first axis of the input vector.  
-    If a roimask is provided, the flattened roimask will be used to crop the vector before decomposition.
-
-    If n_components is not set, an adaptive svd threshold is used 
-    (see approximate_svd_linearity_transition), 
-    with the hyperparameter svd_mutliplier.  
-
-    Residuals lost in the ICA projection are captured if calc_residuals == True.  
-    This represents the signal lost by ICA compression.
-
-    Arguments:
-        vector: 
-            The (x*y, t) vector to be spatially ICA projected.
-        shape:
-            The shape of the original movie (t,x,y).
-        roimask:
-            The roimask to crop the vectorized movie (x,y).
+    Attributes:
         n_components:
-            Manually request a set number of ICA components.
+            Manual override for n_components into the ICA, defaults to None for automatic calulation.
         svd_multiplier:
             The hyperparameter for svd adaptive thresholding.
         calc_residuals:
             Whether to calculate spatial and temporal residuals of projection compression.
         max_iter:
             Maximum iterations assigned for FastICA
+    '''
+    n_components: int = None
+    crop_excess_noise: bool = True
+    svd_multiplier: float = 5
+    calc_residuals: bool = True
+    max_iter: int = 1000
 
+    def __post_init__(self):
+        assert self.svd_multiplier is not None, \
+            'SVD multiplier value must be specified.'
+
+
+@dataclass
+class PyseasInput:
+    '''
+    Attributes:
+        vector: 
+            The (x*y, t) vector to be spatially ICA projected.
+        shape:
+            The shape of the original movie (t,x,y).
+        roimask:
+            The roimask to crop the vectorized movie (x,y).
+        maskind:
+            The indices of each vector frame corresponding to the mask.
+    '''
+    vector: np.ndarray
+    shape: Tuple[int, int, int]
+    roimask: np.ndarray = None
+    maskind: np.ndarray = None
+
+    def __post_init__(self):
+        assert (self.vector.ndim == 2), (
+        'vector was not a two-dimensional np array.'
+        'If input is a movie, be sure to convert shape to (xy, t)')
+
+        if vector.dtype == np.float16:
+            vector = vector.astype('float32', copy=False)
+            
+        if self.roimask is not None:
+            print('Roimask will be used to crop video.')
+            assert self.roimask.size == vector.shape[0], \
+            'Vector was not the same size as the cropped mask'
+
+            print('Original vector size:', vector.shape)
+            maskind = np.where(self.roimask.flat == 1)
+            self.vector = self.vector[maskind]
+            print('Original vector reduced to size:', self.vector.shape)
+
+def estimate_n_components(vector, svd_multiplier) -> Tuple[np.ndarray, int]:
+    print('Estimating n_component with SVD...')
+    try:
+        u, ev, _ = linalg.svd(vector, full_matrices=False)
+    except ValueError:
+        try:
+            # LAPACK error if matricies are too big
+            u, ev, _ = linalg.svd(vector,
+                                    full_matrices=False,
+                                    lapack_driver='gesvd')
+        except ValueError:
+            u, ev, _ = np.linalg.svd(vector,
+                                        full_matrices=False)
+    # components['svd_eigval'] = ev # Not used anywhere, should I store this?
+
+    # Get starting point for decomposition based on svd mutliplier * the approximate
+    # point of transition to linearity in tail of ev components.
+    cross_1 = approximate_svd_linearity_transition(ev)
+    n_components = cross_1 * svd_multiplier
+    
+    return u, n_components
+    
+def calculate_residuals(input: PyseasInput, components: PyseasRecord) -> Dict:
+    vector = input.vector.astype('float64')
+    rebuilt = rebuild(components,
+                      artifact_components='none',
+                      apply_mean_filter=False).T
+    rebuilt -= rebuilt.mean(axis=0)
+    vector -= vector.mean(axis=0)
+    residuals = np.abs(vector - rebuilt)
+    residuals_temporal = residuals.mean(axis=0)
+
+    if input.roimask is not None:
+        residuals_spatial = np.zeros(input.roimask.shape)
+        residuals_spatial.flat[input.maskind] = residuals.mean(axis=1)
+    else:
+        residuals_spatial = np.reshape(residuals.mean(axis=1),
+                                       (shape[1], shape[2]))
+        
+    output = {}
+    output['residuals_spatial'] = residuals_spatial
+    output['residuals_temporal'] = residuals_temporal
+
+    return output
+
+def flip_components(components: PyseasRecord) -> Dict:
+    # Track component orientation and ensure positive spatial patterns
+    n_components = components.n_components
+    eig_vec = np.zeros_like(components.eig_vec)
+    eig_mix = np.zeros_like(components.eig_mix)
+    flipped = np.ones(n_components)
+    
+    for i in range(n_components):
+        # Find the index of maximum absolute value
+        max_idx = np.argmax(np.abs(components.eig_vec[:, i]))
+        # If that maximum value is negative, flip the component
+        if components.eig_vec[max_idx, i] < 0:
+            eig_vec[:, i] = -1 * components.eig_vec[:, i]
+            eig_mix[:, i] = -1 * components.eig_mix[:, i]
+            flipped[i] = -1
+
+        output = {}
+        output['eig_vec'] = eig_vec
+        output['eig_mix'] = eig_mix
+        output['flipped'] = flipped
+
+        return output
+    
+def crop_excess_noise(n_components: int, eig_vec: np.ndarray, eig_mix: np.ndarray, noise: np.ndarray, lag1_full: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    print('Cropping excess noise components')
+    reduced_n_components = int((noise.size - noise.sum()) * 1.25)
+    print('reduced_n_components:', reduced_n_components)
+    if reduced_n_components < n_components:
+        print('Cropping', n_components, 'to', reduced_n_components)
+
+        # NOTE: This doesn't guarantee all removed components are noise.
+        ev_sort = np.argsort(eig_mix.std(axis=0))
+        eig_vec = eig_vec[:, ev_sort][:, ::-1]
+        eig_mix = eig_mix[:, ev_sort][:, ::-1]
+        noise = noise[ev_sort][::-1]
+
+        eig_vec = eig_vec[:, :reduced_n_components]
+        eig_mix = eig_mix[:, :reduced_n_components]
+        n_components = reduced_n_components
+        noise = noise[:reduced_n_components]
+
+        lag1_full = lag1_full[ev_sort][::-1]
+
+        return n_components, eig_vec, eig_mix, noise, lag1_full
+    else:
+        print('Less than 75% signal.  Not cropping excess noise.')
+
+
+def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
+    '''
+    Apply an ica decomposition to the first axis of the input vector.  
+    If a roimask was provided, the flattened roimask will be used to crop the 
+    vector before decomposition.
+
+    If n_components is not set, an adaptive svd threshold is used 
+    (see approximate_svd_linearity_transition), with the hyperparameter 
+    svd_mutliplier.  
+
+    Residuals lost in the ICA projection are captured if calc_residuals == True.  
+    This represents the signal lost by ICA compression.
+    
+    Arguments:
+        input: 
+            a PyseasInput object containing the video to be projected and 
+            associated data.
+        config:
+            a PyseasConfig object containing config for the projection process.
+        
     Returns:
-        components: A dictionary containing all the results, metadata, and information regarding the filter applied.
+        components: A PyseasRecord dictionary containing all the results, 
+        metadata, and information regarding the filter applied.
 
             mean: 
                 the original video mean
@@ -70,7 +245,8 @@ def project(vector: np.ndarray,
             eig_vec: 
                 the eigenvectors
             n_components:
-                the number of components in eig_vec (reduced to only have 25% of total components as noise)
+                the number of components in eig_vec (reduced to only have 25% 
+                of total components as noise)
             project_meta:
                 The metadata for the ica projection
             expmeta:
@@ -78,80 +254,43 @@ def project(vector: np.ndarray,
             lag1: 
                 the lag-1 autocorrelation
             noise_components: 
-                a vector (n components long) to store binary representation of which components were detected as noise 
+                a vector (n components long) to store binary representation of 
+                which components were detected as noise 
             cutoff: 
                 the signal-noise cutoff value
 
-        if the n_components was automatically set, the following additional keys are also returned in components
+        if the n_components was automatically set, the following additional 
+        keys are also returned in components
 
             svd_cutoff: 
                 the number of components originally decomposed
             lag1_full: 
-                the lag-1 autocorrelation of the full set of components decomposed before cropping to only 25% noise components
+                the lag-1 autocorrelation of the full set of components 
+                decomposed before cropping to only 25% noise components
             svd_multiplier: 
                 the svd multiplier value used to determine cutoff
     '''
     print('\nCalculating Eigenspace\n-----------------------')
-    assert (vector.ndim == 2), (
-        'vector was not a two-dimensional np array.'
-        'If input is a movie, be sure to convert shape to (xy, t)')
 
-    if roimask is not None:
-        print('Using roimask to crop video')
-        assert roimask.size == vector.shape[0], \
-        'Vector was not the same size as the cropped mask'
-
-        print('Original size:', vector.shape)
-        maskind = np.where(roimask.flat == 1)
-        vector = vector[maskind]
-        print('Reduced size:', vector.shape)
-
+    # Preprocessing
     mean = np.mean(vector, 0).flatten()
     vector = vector - mean
-
-    components = {}
-    components['mean'] = mean
-    components['roimask'] = roimask
-    components['shape'] = shape
-
-    if svd_multiplier is None:
-        svd_multiplier = 5
-
-    if vector.dtype == np.float16:
-        vector = vector.astype('float32', copy=False)
-
+    
+    # =========================== START ICA BLOCK ========================== #
+    t0 = timer()
     if n_components is None:
-        print('Calculating ICA (with n_component SVD estimator)...')
-
-        t0 = timer()
-        try:
-            u, ev, _ = linalg.svd(vector, full_matrices=False)
-        except ValueError:
-            try:
-                # LAPACK error if matricies are too big
-                u, ev, _ = linalg.svd(vector,
-                                      full_matrices=False,
-                                      lapack_driver='gesvd')
-            except ValueError:
-                u, ev, _ = np.linalg.svd(vector,
-                                         full_matrices=False)
-        components['svd_eigval'] = ev
-
-        #Get starting point for decomposition based on svd mutliplier * the approximate
-        # point of transition to linearity in tail of ev components.
-        cross_1 = approximate_svd_linearity_transition(ev)
-        n_components = cross_1 * svd_multiplier
-
-        components['increased_cutoff'] = 0
-
+        increased_cutoff = 0
+        u, n_components = estimate_n_components(input.vector, 
+                                                config.svd_multiplier)
+        
         while True:
             print('\nCalculating ICA with', n_components, 'components...')
 
             w_init = u[:n_components, :n_components].astype('float64')
-            ica = FastICA(n_components=n_components,
-                          max_iter=max_iter,
-                          random_state=1000,
-                          w_init=w_init)
+            ica = FastICA(n_components = n_components,
+                          max_iter = config.max_iter,
+                          random_state = 1000,
+                          w_init = w_init)
 
             eig_vec = ica.fit_transform(vector)
             print("n_iter:" , ica.n_iter_)
@@ -161,13 +300,14 @@ def project(vector: np.ndarray,
 
             p_signal = (1 - noise.sum() / noise.size) * 100
 
-            if noise.size == shape[0]:  # All components are being used.
+            #Signal/noise check #1
+            if noise.size == input.shape[0]:  # All components are being used.
                 break
             elif p_signal < 75:
                 print('ICA components were under 75% signal ({0}% signal).'\
                     .format(p_signal))
                 break
-            elif n_components >= shape[0]:
+            elif n_components >= input.shape[0]:
                 print('ICA components were under 75% signal ({0}% signal).'\
                     .format(p_signal))
                 print('However, number of components is maxed out.')
@@ -178,53 +318,30 @@ def project(vector: np.ndarray,
                     .format(p_signal))
                 print('Recalculating with more components...')
                 n_components += n_components // 2
-                components['increased_cutoff'] += 1
+                increased_cutoff += 1
 
-                if n_components > shape[0]:
+                if n_components > input.shape[0]:
                     print('\nComponents maxed out!')
                     print('\tAttempted:', n_components)
-                    n_components = shape[0]
-                    print('\tReduced to:', shape[0])
+                    n_components = input.shape[0]
+                    print('\tReduced to:', input.shape[0])
 
-        components['lag1_full'] = lag_n_autocorr(eig_mix.T, 1)
-        components['svd_multiplier'] = svd_multiplier
-
-        print('Cropping excess noise components')
-        components['svd_cutoff'] = n_components
-        reduced_n_components = int((noise.size - noise.sum()) * 1.25)
-
-        print('reduced_n_components:', reduced_n_components)
+        lag1_full = lag_n_autocorr(eig_mix.T, 1)
+        svd_cutoff = n_components
         
-        if crop_excess_noise:
-            if reduced_n_components < n_components:
-                print('Cropping', n_components, 'to', reduced_n_components)
-
-                ev_sort = np.argsort(eig_mix.std(axis=0))
-                eig_vec = eig_vec[:, ev_sort][:, ::-1]
-                eig_mix = eig_mix[:, ev_sort][:, ::-1]
-                noise = noise[ev_sort][::-1]
-
-                eig_vec = eig_vec[:, :reduced_n_components]
-                eig_mix = eig_mix[:, :reduced_n_components]
-                n_components = reduced_n_components
-                noise = noise[:reduced_n_components]
-
-                components['lag1_full'] = components['lag1_full'][ev_sort][::-1]
-            else:
-                print('Less than 75% signal.  Not cropping excess noise.')
+        # Signal/noise check #2
+        if config.crop_excess_noise:
+            n_components, eig_vec, eig_mix, noise, lag1_full = crop_excess_noise(
+            n_components, eig_vec, eig_mix, noise, lag1_full)
         else:
             print('Noise retention enabled. Not cropping excess noise.')
-
-        components['noise_components'] = noise
-        components['cutoff'] = cutoff
-        t = timer() - t0
-        print('Independent Component Analysis took: {0} sec'.format(t))
 
     else:
         print('Calculating ICA (' + str(n_components) + ' components)...')
 
-        t0 = timer()
-        ica = FastICA(n_components=n_components, max_iter=max_iter, random_state=1000)
+        ica = FastICA(n_components = n_components, 
+                      max_iter = config.max_iter, 
+                      random_state = 1000)
 
         try:
             eig_vec = ica.fit_transform(vector)  # Eigenbrains
@@ -235,79 +352,53 @@ def project(vector: np.ndarray,
             # Overcome this by converting to float64.
             eig_vec = ica.fit_transform(vector.astype('float64'))
 
-        t = timer() - t0
-        print('Independent Component Analysis took: {0} sec'.format(t))
         eig_mix = ica.mixing_
 
         # Sort components by their eig val influence (approximated by timecourse standard deviation).
         ev_sort = np.argsort(eig_mix.std(axis=0))
         eig_vec = eig_vec[:, ev_sort][:, ::-1]
         eig_mix = eig_mix[:, ev_sort][:, ::-1]
-
-        # Track component orientation and ensure positive spatial patterns
-        flipped = np.ones(n_components)
-        for i in range(n_components):
-            # Find the index of maximum absolute value
-            max_idx = np.argmax(np.abs(eig_vec[:, i]))
-            # If that maximum value is negative, flip the component
-            if eig_vec[max_idx, i] < 0:
-                eig_vec[:, i] *= -1
-                eig_mix[:, i] *= -1
-                flipped[i] = -1
                 
         noise, cutoff = sort_noise(eig_mix.T)
-        components['noise_components'] = noise
-        components['cutoff'] = cutoff
-        components['flipped'] = flipped
+        lag1_full = None
+
+    t = timer() - t0
+    print('Independent Component Analysis took: {0} sec'.format(t))
 
     print('components shape:', eig_vec.shape)
+    assert n_components == eig_vec.shape[1], "HUUUHHHH????"
+    timecourses = eig_mix.T
+    lag1 = lag_n_autocorr(timecourses, 1)
+    
+    # =========================== FINISH ICA BLOCK ========================== #
 
-    components['eig_mix'] = eig_mix
-    components['timecourses'] = eig_mix.T
+    components = PyseasRecord(mean = mean,
+                              roimask = input.roimask,
+                              shape = input.shape,
+                              eig_mix = eig_mix,
+                              timecourses = timecourses,
+                              n_components = n_components,
+                              lag1 = lag1,
+                              noise_components = noise,
+                              cutoff = cutoff,
+                              svd_cutoff = svd_cutoff,
+                              svd_multiplier = config.svd_multiplier,
+                              increased_cutoff = increased_cutoff,
+                              lag1_full = lag1_full)
+    components.save_creation_metadata(n_components, t)
+    components = components.asdict() # lel
 
-    n_components = eig_vec.shape[1]
-    components['eig_vec'] = eig_vec
-    components['n_components'] = n_components
-    components['lag1'] = lag_n_autocorr(components['timecourses'], 1)
-
-    if calc_residuals:
+    # Better way to handle this?
+    flipped_components = flip_components(components)
+    components.update(flipped_components)
+    
+    if config.calc_residuals:
         try:
-            vector = vector.astype('float64')
-            rebuilt = rebuild(components,
-                              artifact_components='none',
-                              apply_mean_filter=False).T
-
-            rebuilt -= rebuilt.mean(axis=0)
-            vector -= vector.mean(axis=0)
-
-            residuals = np.abs(vector - rebuilt)
-
-            residuals_temporal = residuals.mean(axis=0)
-
-            if roimask is not None:
-                residuals_spatial = np.zeros(roimask.shape)
-                residuals_spatial.flat[maskind] = residuals.mean(axis=1)
-            else:
-                residuals_spatial = np.reshape(residuals.mean(axis=1),
-                                               (shape[1], shape[2]))
-
-            components['residuals_spatial'] = residuals_spatial
-            components['residuals_temporal'] = residuals_temporal
-
+            residuals = calculate_residuals(input, components)
+            components.update(residuals)
         except Exception as e:
             print('Residual Calculation Failed!!')
             print('\t', e)
-
-    # Save filter metadata information about how and when movie was filtered in dictionary.
-    project_meta = {}
-    project_meta['time_elapsed'] = t
-    project_meta['date'] = \
-        datetime.now().strftime('%Y%m%d')[2:]
-    fmt = '%Y-%m-%dT%H:%M:%SZ'
-    project_meta['tstmp'] = \
-        datetime.now().strftime(fmt)
-    project_meta['n_components'] = n_components
-    components['project_meta'] = project_meta
 
     print('\n')
     return components
