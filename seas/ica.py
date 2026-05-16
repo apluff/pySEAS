@@ -19,7 +19,7 @@ from scipy import ndimage
 import tifffile as tif
 
 # Refactor additions
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Dict
 
 
@@ -32,7 +32,6 @@ class PyseasRecord:
     timecourses: np.ndarray
     eig_vec: np.ndarray
     n_components: int
-    project_meta: Dict
     lag1: np.ndarray
     lag1_full: np.ndarray
     noise_components: np.ndarray
@@ -102,21 +101,21 @@ class PyseasInput:
         'vector was not a two-dimensional np array.'
         'If input is a movie, be sure to convert shape to (xy, t)')
 
-        if vector.dtype == np.float16:
-            vector = vector.astype('float32', copy=False)
+        if self.vector.dtype == np.float16:
+            self.vector = self.vector.astype('float32', copy=False)
             
         if self.roimask is not None:
             print('Roimask will be used to crop video.')
-            assert self.roimask.size == vector.shape[0], \
+            assert self.roimask.size == self.vector.shape[0], \
             'Vector was not the same size as the cropped mask'
 
-            print('Original vector size:', vector.shape)
-            maskind = np.where(self.roimask.flat == 1)
-            self.vector = self.vector[maskind]
+            print('Original vector size:', self.vector.shape)
+            self.maskind = np.where(self.roimask.flat == 1)
+            self.vector = self.vector[self.maskind]
             print('Original vector reduced to size:', self.vector.shape)
 
 def estimate_n_components(vector, svd_multiplier) -> Tuple[np.ndarray, int]:
-    print('Estimating n_component with SVD...')
+    print('Estimating n_components with SVD...')
     try:
         u, ev, _ = linalg.svd(vector, full_matrices=False)
     except ValueError:
@@ -273,14 +272,14 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
     print('\nCalculating Eigenspace\n-----------------------')
 
     # Preprocessing
-    mean = np.mean(vector, 0).flatten()
-    vector = vector - mean
+    mean = np.mean(input.vector, 0).flatten()
+    vector = input.vector - mean
     
     # =========================== START ICA BLOCK ========================== #
     t0 = timer()
-    if n_components is None:
-        increased_cutoff = 0
-        u, n_components = estimate_n_components(input.vector, 
+    increased_cutoff = 0
+    if config.n_components is None:
+        u, n_components = estimate_n_components(vector, 
                                                 config.svd_multiplier)
         
         while True:
@@ -337,6 +336,7 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
             print('Noise retention enabled. Not cropping excess noise.')
 
     else:
+        n_components = config.n_components
         print('Calculating ICA (' + str(n_components) + ' components)...')
 
         ica = FastICA(n_components = n_components, 
@@ -361,6 +361,7 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
                 
         noise, cutoff = sort_noise(eig_mix.T)
         lag1_full = None
+        svd_cutoff = n_components
 
     t = timer() - t0
     print('Independent Component Analysis took: {0} sec'.format(t))
@@ -377,6 +378,7 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
                               shape = input.shape,
                               eig_mix = eig_mix,
                               timecourses = timecourses,
+                              eig_vec = eig_vec,
                               n_components = n_components,
                               lag1 = lag1,
                               noise_components = noise,
@@ -386,7 +388,7 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
                               increased_cutoff = increased_cutoff,
                               lag1_full = lag1_full)
     components.save_creation_metadata(n_components, t)
-    components = components.asdict() # lel
+    components = asdict(components) # lel
 
     # Better way to handle this?
     flipped_components = flip_components(components)
