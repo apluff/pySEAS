@@ -21,7 +21,7 @@ import tifffile as tif
 # Refactor additions
 from dataclasses import dataclass, asdict
 from typing import Dict
-
+from abc import ABC, abstractmethod
 
 @dataclass
 class PyseasRecord:
@@ -54,6 +54,106 @@ class PyseasRecord:
         self.project_meta = project_meta
 
 
+class Projector(ABC):
+
+    @abstractmethod
+    def project(self, vector):
+        pass
+
+
+class _FastICA(Projector):
+
+    def __init__(self, n_components = None, max_iter = 1000):
+        self.n_components = n_components
+        self.max_iter = max_iter
+
+    def project(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int, int]:
+        '''
+        Replicates original ICA process per Weiser et al. 2023.
+        '''
+        # ========================= START ICA BLOCK ======================== #
+        increased_cutoff = 0
+        if self.n_components is None:
+            u, n_components = estimate_n_components(vector, 
+                                                    self.svd_multiplier)
+            w_init = u[:n_components, :n_components].astype('float64')
+        else:
+            n_components = self.n_components
+            w_init = None
+            
+        while True:
+            print('\nCalculating ICA with', n_components, 'components...')
+
+            ica = FastICA(n_components = n_components,
+                        max_iter = self.max_iter,
+                        random_state = 1000,
+                        w_init = w_init)
+
+            try:
+                eig_vec = ica.fit_transform(vector)  # Eigenbrains
+            except ValueError:
+                print('Calculation exceeded float32 maximum.')
+                print('Trying again with float64 vector...')
+                # Value error if any value exceeds float32 maximum.
+                # Overcome this by converting to float64.
+                eig_vec = ica.fit_transform(vector.astype('float64'))
+            print("n_iter:" , ica.n_iter_)
+            
+            eig_mix = ica.mixing_
+            noise, cutoff = sort_noise(eig_mix.T)
+
+            #Signal/noise check #1
+            p_signal = (1 - noise.sum() / noise.size) * 100
+            if self.n_components is not None: # No dynamic threshold required
+                break
+            elif noise.size == input.shape[0]:  # All components are being used.
+                break
+            elif p_signal < 75:
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                break
+            elif n_components >= input.shape[0]:
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('However, number of components is maxed out.')
+                print('Using this decomposition...')
+                break
+            else:
+                print('ICA components were over 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('Recalculating with more components...')
+                n_components += n_components // 2
+                increased_cutoff += 1
+
+                if n_components > input.shape[0]:
+                    print('\nComponents maxed out!')
+                    print('\tAttempted:', n_components)
+                    n_components = input.shape[0]
+                    print('\tReduced to:', input.shape[0])
+
+        if self.n_components is None:
+            lag1_full = lag_n_autocorr(eig_mix.T, 1)
+            svd_cutoff = n_components
+        else: # For compatability with original pySEAS dicts
+            lag1_full = None # Maybe change this to return all the time.
+            svd_cutoff = None
+        # ========================= FINISH ICA BLOCK ======================== #
+
+        return n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff
+
+
+class _InfoMaxICA(Projector):
+    pass
+
+
+class _JADEICA(Projector):
+    pass
+
+
+class _PCA(Projector):
+    pass
+
+
 @dataclass
 class PyseasConfig:
     '''
@@ -71,12 +171,18 @@ class PyseasConfig:
     crop_excess_noise: bool = True
     svd_multiplier: float = 5
     calc_residuals: bool = True
-    max_iter: int = 1000
+    projector: str = 'FastICA'
+    max_iter: int = None
 
     def __post_init__(self):
+        valid_projectors = ['FastICA', 'InfoMax', 'JADE', 'PCA']
+        
+        assert self.projector in valid_projectors, \
+            'Specified projector is not valid, must be "FastICA", "InfoMax",' \
+            ' "JADE", or "PCA".'
         assert self.svd_multiplier is not None, \
             'SVD multiplier value must be specified.'
-
+        
 
 @dataclass
 class PyseasInput:
@@ -159,7 +265,7 @@ def calculate_residuals(input: PyseasInput, components: PyseasRecord) -> Dict:
 
     return output
 
-def flip_components(components: PyseasRecord) -> Dict:
+def flip_components(components: PyseasRecord) -> None:
     # Track component orientation and ensure positive spatial patterns
     n_components = components.n_components
     eig_vec = np.zeros_like(components.eig_vec)
@@ -180,34 +286,53 @@ def flip_components(components: PyseasRecord) -> Dict:
         output['eig_mix'] = eig_mix
         output['flipped'] = flipped
 
-        return output
+        # NOTE: does this work like this?
+        components.update(output)
     
-def crop_excess_noise(n_components: int, eig_vec: np.ndarray, eig_mix: np.ndarray, noise: np.ndarray, lag1_full: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def crop_excess_noise(components: PyseasRecord) -> None:
+    n_components = components.n_components
+    eig_vec = components.eig_vec
+    eig_mix = components.eig_mix
+    noise = components.noise_components
+    
     print('Cropping excess noise components')
     reduced_n_components = int((noise.size - noise.sum()) * 1.25)
     print('reduced_n_components:', reduced_n_components)
     if reduced_n_components < n_components:
         print('Cropping', n_components, 'to', reduced_n_components)
 
-        # NOTE: This doesn't guarantee all removed components are noise.
-        ev_sort = np.argsort(eig_mix.std(axis=0))
-        eig_vec = eig_vec[:, ev_sort][:, ::-1]
-        eig_mix = eig_mix[:, ev_sort][:, ::-1]
-        noise = noise[ev_sort][::-1]
-
         eig_vec = eig_vec[:, :reduced_n_components]
         eig_mix = eig_mix[:, :reduced_n_components]
         n_components = reduced_n_components
-        noise = noise[:reduced_n_components]
+        noise_components = noise[:reduced_n_components]
 
-        lag1_full = lag1_full[ev_sort][::-1]
-
-        return n_components, eig_vec, eig_mix, noise, lag1_full
+        # NOTE: Does this work like this?
+        components.update(eig_vec, eig_mix, n_components, noise_components)
     else:
         print('Less than 75% signal.  Not cropping excess noise.')
 
+def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = None) -> None:
+    assert components is not None, 'PyseasRecord must be provided for sort.'
+    eig_mix = components.eig_mix
+    eig_vec = components.eig_vec
+    noise = components.noise_components
+    lag1_full = components.lag1_full
+    match sort_by:
+        case 'timecourse_std': # Original pySEAS default.
+            # Sort components by their eig val influence (approximated by timecourse standard deviation).
+            # NOTE: This doesn't guarantee all removed components are noise.
+            ev_sort = np.argsort(eig_mix.std(axis=0))
+        case 'lag1': # Guarantees correct ordering for noise cropping
+            ev_sort = np.argsort(eig_mix.std(axis=0))
+    eig_vec = eig_vec[:, ev_sort][:, ::-1]
+    eig_mix = eig_mix[:, ev_sort][:, ::-1]
+    noise_components = noise[ev_sort][::-1]
+    lag1_full = lag1_full[ev_sort][::-1]
 
-def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
+    # NOTE: does this work like this?
+    components.update(eig_vec, eig_mix, noise_components, lag1_full)
+
+def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     '''
     Apply an ica decomposition to the first axis of the input vector.  
     If a roimask was provided, the flattened roimask will be used to crop the 
@@ -270,108 +395,36 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
                 the svd multiplier value used to determine cutoff
     '''
     print('\nCalculating Eigenspace\n-----------------------')
+    config = Config
+    input = Input
 
-    # Preprocessing
+    # ============= Preprocessing ============= #
+
     mean = np.mean(input.vector, 0).flatten()
     vector = input.vector - mean
     
-    # =========================== START ICA BLOCK ========================== #
+    # ============= Projection ============= #
+
+    # TODO: Add cases
+    match config.projector:
+        case 'FastICA':
+            calculator = _FastICA(n_components = config.n_components, 
+                                  max_iter = config.max_iter)
+
     t0 = timer()
-    increased_cutoff = 0
-    if config.n_components is None:
-        u, n_components = estimate_n_components(vector, 
-                                                config.svd_multiplier)
-        
-        while True:
-            print('\nCalculating ICA with', n_components, 'components...')
-
-            w_init = u[:n_components, :n_components].astype('float64')
-            ica = FastICA(n_components = n_components,
-                          max_iter = config.max_iter,
-                          random_state = 1000,
-                          w_init = w_init)
-
-            eig_vec = ica.fit_transform(vector)
-            print("n_iter:" , ica.n_iter_)
-            eig_mix = ica.mixing_
-
-            noise, cutoff = sort_noise(eig_mix.T)
-
-            p_signal = (1 - noise.sum() / noise.size) * 100
-
-            #Signal/noise check #1
-            if noise.size == input.shape[0]:  # All components are being used.
-                break
-            elif p_signal < 75:
-                print('ICA components were under 75% signal ({0}% signal).'\
-                    .format(p_signal))
-                break
-            elif n_components >= input.shape[0]:
-                print('ICA components were under 75% signal ({0}% signal).'\
-                    .format(p_signal))
-                print('However, number of components is maxed out.')
-                print('Using this decomposition...')
-                break
-            else:
-                print('ICA components were over 75% signal ({0}% signal).'\
-                    .format(p_signal))
-                print('Recalculating with more components...')
-                n_components += n_components // 2
-                increased_cutoff += 1
-
-                if n_components > input.shape[0]:
-                    print('\nComponents maxed out!')
-                    print('\tAttempted:', n_components)
-                    n_components = input.shape[0]
-                    print('\tReduced to:', input.shape[0])
-
-        lag1_full = lag_n_autocorr(eig_mix.T, 1)
-        svd_cutoff = n_components
-        
-        # Signal/noise check #2
-        if config.crop_excess_noise:
-            n_components, eig_vec, eig_mix, noise, lag1_full = crop_excess_noise(
-            n_components, eig_vec, eig_mix, noise, lag1_full)
-        else:
-            print('Noise retention enabled. Not cropping excess noise.')
-
-    else:
-        n_components = config.n_components
-        print('Calculating ICA (' + str(n_components) + ' components)...')
-
-        ica = FastICA(n_components = n_components, 
-                      max_iter = config.max_iter, 
-                      random_state = 1000)
-
-        try:
-            eig_vec = ica.fit_transform(vector)  # Eigenbrains
-        except ValueError:
-            print('Calculation exceeded float32 maximum.')
-            print('Trying again with float64 vector...')
-            # Value error if any value exceeds float32 maximum.
-            # Overcome this by converting to float64.
-            eig_vec = ica.fit_transform(vector.astype('float64'))
-
-        eig_mix = ica.mixing_
-
-        # Sort components by their eig val influence (approximated by timecourse standard deviation).
-        ev_sort = np.argsort(eig_mix.std(axis=0))
-        eig_vec = eig_vec[:, ev_sort][:, ::-1]
-        eig_mix = eig_mix[:, ev_sort][:, ::-1]
-                
-        noise, cutoff = sort_noise(eig_mix.T)
-        lag1_full = None
-        svd_cutoff = n_components
-
+    n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff \
+        = calculator.project(vector)
     t = timer() - t0
     print('Independent Component Analysis took: {0} sec'.format(t))
 
+    # HUHHHHH????
     print('components shape:', eig_vec.shape)
     assert n_components == eig_vec.shape[1], "HUUUHHHH????"
+
+    # ============= Saving ============= #  
+
     timecourses = eig_mix.T
     lag1 = lag_n_autocorr(timecourses, 1)
-    
-    # =========================== FINISH ICA BLOCK ========================== #
 
     components = PyseasRecord(mean = mean,
                               roimask = input.roimask,
@@ -388,12 +441,19 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
                               increased_cutoff = increased_cutoff,
                               lag1_full = lag1_full)
     components.save_creation_metadata(n_components, t)
-    components = asdict(components) # lel
 
-    # Better way to handle this?
-    flipped_components = flip_components(components)
-    components.update(flipped_components)
-    
+    # ============= Postprocessing ============= #
+
+    # Sort components by timecourse standard deviation per pyseas default
+    sort_components(sort_by = 'timecourse_std', components = components)
+
+    # Crop excess noise components from record
+    if config.crop_excess_noise:
+        crop_excess_noise(components)
+    else:
+        print('Noise retention enabled. Not cropping excess noise.')
+
+    # Calculate residuals
     if config.calc_residuals:
         try:
             residuals = calculate_residuals(input, components)
@@ -401,6 +461,9 @@ def project(input: PyseasInput, config: PyseasConfig) -> PyseasRecord:
         except Exception as e:
             print('Residual Calculation Failed!!')
             print('\t', e)
+
+    # Flip inverted components
+    flip_components(components)
 
     print('\n')
     return components
