@@ -19,12 +19,13 @@ from scipy import ndimage
 import tifffile as tif
 
 # Refactor additions
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, fields, asdict
 from typing import Dict
 from abc import ABC, abstractmethod
+from collections.abc import MutableMapping
 
 @dataclass
-class PyseasRecord:
+class PyseasRecord(MutableMapping):
     mean:  np.ndarray
     roimask: np.ndarray
     shape: Tuple[int, int, int]
@@ -40,6 +41,33 @@ class PyseasRecord:
     svd_multiplier: int
     increased_cutoff: int
     flipped: np.ndarray = None
+    project_meta: dict = field(default_factory=dict)
+    _extra: dict = field(default_factory=dict)
+
+    def __getitem__(self, key):
+        if key in self.__dataclass_fields__:
+            return getattr(self, key)
+        return self._extra[key]
+    
+    def __setitem__(self, key, value):
+        if key in self.__dataclass_fields__:
+            setattr(self, key)
+        else:
+            self._extra[key] = value
+    
+    def __delitem__(self, key):
+        if key in self.__dataclass_fields__:
+            raise KeyError("Cannot delete core dataclass field.")
+        else:
+            del self._extra[key]
+
+    def __iter__(self):
+        yield from (f.name for f in fields(self) if not f.name.startswith("_"))
+        yield from self._extra
+
+    def __len__(self):
+        return (len([f for f in fields(self) if not f.name.startswith("_")])
+                + len(self._extra))
 
     def save_creation_metadata(self, n_components: int, time_elapsed: float):
         # Save filter metadata information about how and when movie was filtered in dictionary.
@@ -69,7 +97,8 @@ class _FastICA(Projector):
 
     def project(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int, int]:
         '''
-        Replicates original ICA process per Weiser et al. 2023.
+        Replicates original FastICA processing in conjunction with the
+        top-level function project() (original wrapper) per Weiser et al. 2023.
         '''
         # ========================= START ICA BLOCK ======================== #
         increased_cutoff = 0
@@ -146,7 +175,7 @@ class _InfoMaxICA(Projector):
     pass
 
 
-class _JADEICA(Projector):
+class _JadeICA(Projector):
     pass
 
 
@@ -242,7 +271,7 @@ def estimate_n_components(vector, svd_multiplier) -> Tuple[np.ndarray, int]:
     
     return u, n_components
     
-def calculate_residuals(input: PyseasInput, components: PyseasRecord) -> Dict:
+def calculate_residuals(input: PyseasInput, components: PyseasRecord) -> dict:
     vector = input.vector.astype('float64')
     rebuilt = rebuild(components,
                       artifact_components='none',
@@ -265,7 +294,7 @@ def calculate_residuals(input: PyseasInput, components: PyseasRecord) -> Dict:
 
     return output
 
-def flip_components(components: PyseasRecord) -> None:
+def flip_components(components: PyseasRecord) -> dict:
     # Track component orientation and ensure positive spatial patterns
     n_components = components.n_components
     eig_vec = np.zeros_like(components.eig_vec)
@@ -286,8 +315,7 @@ def flip_components(components: PyseasRecord) -> None:
         output['eig_mix'] = eig_mix
         output['flipped'] = flipped
 
-        # NOTE: does this work like this?
-        components.update(output)
+        return output
     
 def crop_excess_noise(components: PyseasRecord) -> None:
     n_components = components.n_components
@@ -306,12 +334,17 @@ def crop_excess_noise(components: PyseasRecord) -> None:
         n_components = reduced_n_components
         noise_components = noise[:reduced_n_components]
 
-        # NOTE: Does this work like this?
-        components.update(eig_vec, eig_mix, n_components, noise_components)
+        output = {}
+        output['eig_vec'] = eig_vec
+        output['eig_mix'] = eig_mix
+        output['n_components'] = n_components
+        output['noise_components'] = noise_components
+
+        return output
     else:
         print('Less than 75% signal.  Not cropping excess noise.')
 
-def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = None) -> None:
+def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = None) -> dict:
     assert components is not None, 'PyseasRecord must be provided for sort.'
     eig_mix = components.eig_mix
     eig_vec = components.eig_vec
@@ -329,8 +362,13 @@ def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = 
     noise_components = noise[ev_sort][::-1]
     lag1_full = lag1_full[ev_sort][::-1]
 
-    # NOTE: does this work like this?
-    components.update(eig_vec, eig_mix, noise_components, lag1_full)
+    output = {}
+    output['eig_vec'] = eig_vec
+    output['eig_mix'] = eig_mix
+    output['noise_components'] = noise_components
+    output['lag1_full'] = lag1_full
+
+    return output
 
 def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     '''
@@ -383,8 +421,8 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
             cutoff: 
                 the signal-noise cutoff value
 
-        if the n_components was automatically set, the following additional 
-        keys are also returned in components
+        if the n_components was automatically set, the following keys are also
+        set in components (otherwise default to None)
 
             svd_cutoff: 
                 the number of components originally decomposed
@@ -421,10 +459,10 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     print('components shape:', eig_vec.shape)
     assert n_components == eig_vec.shape[1], "HUUUHHHH????"
 
-    # ============= Saving ============= #  
-
     timecourses = eig_mix.T
     lag1 = lag_n_autocorr(timecourses, 1)
+
+    # ============= Saving ============= #  
 
     components = PyseasRecord(mean = mean,
                               roimask = input.roimask,
@@ -445,11 +483,14 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     # ============= Postprocessing ============= #
 
     # Sort components by timecourse standard deviation per pyseas default
-    sort_components(sort_by = 'timecourse_std', components = components)
+    sorted_components = sort_components(sort_by = 'timecourse_std', 
+                                        components = components)
+    components.update(sorted_components)
 
     # Crop excess noise components from record
     if config.crop_excess_noise:
-        crop_excess_noise(components)
+        cropped_components = crop_excess_noise(components)
+        components.update(cropped_components)
     else:
         print('Noise retention enabled. Not cropping excess noise.')
 
@@ -463,7 +504,8 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
             print('\t', e)
 
     # Flip inverted components
-    flip_components(components)
+    flipped_components = flip_components(components)
+    components.update(flipped_components)
 
     print('\n')
     return components
