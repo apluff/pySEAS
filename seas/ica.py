@@ -1540,8 +1540,12 @@ def dynamic_threshold(components: dict) -> dict:
         print("flipped already exists in components dict.")
         assert np.all(flipped == components['flipped'])
     else:
-        output['flipped'] = flipped
+        output['flipped'] = flipped.astype(np.int8)
+
+    binary_ICs = np.where(flipped * eig_vec > flipped * thresholds, 1, 0)
+
     output['component_thresholds'] = thresholds
+    output['binary_threshold_spatial'] = binary_ICs
     return output
 
 def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
