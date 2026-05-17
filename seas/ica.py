@@ -51,7 +51,7 @@ class PyseasRecord(MutableMapping):
     
     def __setitem__(self, key, value):
         if key in self.__dataclass_fields__:
-            setattr(self, key)
+            setattr(self, key, value)
         else:
             self._extra[key] = value
     
@@ -69,7 +69,7 @@ class PyseasRecord(MutableMapping):
         return (len([f for f in fields(self) if not f.name.startswith("_")])
                 + len(self._extra))
 
-    def save_creation_metadata(self, n_components: int, time_elapsed: float):
+    def save_creation_metadata(self, projection: str, n_components: int, time_elapsed: float):
         # Save filter metadata information about how and when movie was filtered in dictionary.
         project_meta = {}
         project_meta['time_elapsed'] = time_elapsed
@@ -79,6 +79,7 @@ class PyseasRecord(MutableMapping):
         project_meta['tstmp'] = \
             datetime.now().strftime(fmt)
         project_meta['n_components'] = n_components
+        project_meta['projection'] = projection
         self.project_meta = project_meta
 
 
@@ -91,11 +92,15 @@ class Projector(ABC):
 
 class _FastICA(Projector):
 
-    def __init__(self, n_components = None, max_iter = 1000):
+    def __init__(self, 
+                 n_components = None, 
+                 svd_multiplier = None, 
+                 max_iter = 1000):
         self.n_components = n_components
+        self.svd_multiplier = svd_multiplier
         self.max_iter = max_iter
 
-    def project(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int, int]:
+    def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, int]:
         '''
         Replicates original FastICA processing in conjunction with the
         top-level function project() (original wrapper) per Weiser et al. 2023.
@@ -209,8 +214,12 @@ class PyseasConfig:
         assert self.projector in valid_projectors, \
             'Specified projector is not valid, must be "FastICA", "InfoMax",' \
             ' "JADE", or "PCA".'
-        assert self.svd_multiplier is not None, \
-            'SVD multiplier value must be specified.'
+        if self.n_components is None:
+            assert self.svd_multiplier is not None, \
+                'n_components is unset, so SVD multiplier must be specified.'
+        else:
+            'n_components has been specified, erasing svd_multiplier.'            
+            self.svd_multiplier = None
         
 
 @dataclass
@@ -317,7 +326,7 @@ def flip_components(components: PyseasRecord) -> dict:
 
         return output
     
-def crop_excess_noise(components: PyseasRecord) -> None:
+def crop_excess_noise(components: PyseasRecord) -> dict:
     n_components = components.n_components
     eig_vec = components.eig_vec
     eig_mix = components.eig_mix
@@ -360,7 +369,8 @@ def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = 
     eig_vec = eig_vec[:, ev_sort][:, ::-1]
     eig_mix = eig_mix[:, ev_sort][:, ::-1]
     noise_components = noise[ev_sort][::-1]
-    lag1_full = lag1_full[ev_sort][::-1]
+    if lag1_full is not None:
+        lag1_full = lag1_full[ev_sort][::-1]
 
     output = {}
     output['eig_vec'] = eig_vec
@@ -478,7 +488,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
                               svd_multiplier = config.svd_multiplier,
                               increased_cutoff = increased_cutoff,
                               lag1_full = lag1_full)
-    components.save_creation_metadata(n_components, t)
+    components.save_creation_metadata(config.projector, n_components, t)
 
     # ============= Postprocessing ============= #
 
@@ -490,7 +500,8 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     # Crop excess noise components from record
     if config.crop_excess_noise:
         cropped_components = crop_excess_noise(components)
-        components.update(cropped_components)
+        if cropped_components is not None:
+            components.update(cropped_components)
     else:
         print('Noise retention enabled. Not cropping excess noise.')
 
@@ -575,12 +586,15 @@ def rebuild(components: dict,
 
     assert type(components) is dict, 'Components were not in format expected'
 
+    # Localising variables (will work fine with PyseasRecord)
     eig_vec = components['eig_vec']
     eig_mix = components['eig_mix']
     roimask = components['roimask']
     shape = components['shape']
     mean = components['mean']
     n_components = components['n_components']
+
+    # This variable could use a new name?
     dtype = np.float32
 
     t, x, y = shape
@@ -589,6 +603,8 @@ def rebuild(components: dict,
     if mean.ndim > 1:  # why is there sometimes an extra dimension added?
         mean = mean.flatten()
 
+
+    # Determining reconstruction indices
     if artifact_components is None:
         artifact_components = components['artifact_components']
     elif artifact_components == 'none':
@@ -611,6 +627,7 @@ def rebuild(components: dict,
 
     n_components = reconstruct_indices.size
 
+    # Data validation (can probably do this in PyseasRecord?)
     # Make sure vector extracted properly matches the roimask given.
     if roimask is None:
         assert eig_vec[:, 0].size == x * y, (
@@ -631,6 +648,8 @@ def rebuild(components: dict,
         thresh_eig_mix = threshold_components(eig_mix, thresh_param=cthresh)
         eig_mix = thresh_eig_mix
 
+
+    # Determining start and stop bounds
     if (t_start == None):
         t_start = 0
 
@@ -647,11 +666,13 @@ def rebuild(components: dict,
     print('eig_vec:', eig_vec.shape)
     print('eig_mix:', eig_mix.shape)
 
+    # Actual reconstruction
     print('\nReconstructing....')
     data_r = np.dot(eig_vec[:, reconstruct_indices],
                     eig_mix[t_start:t_stop, reconstruct_indices].T).T
     # spatiotemporal_event_masks = data_r[data_r > 0]
 
+    # More of my extra stuff, integration could be clearer.
     if apply_masked_mean:
         # Apply mean to masks only, zeroing unmasked pixels
         spatiotemporal_event_masks = np.zeros_like(data_r)
@@ -694,6 +715,7 @@ def rebuild(components: dict,
 
     print('Done!')
 
+    # Reshaping
     if roimask is None:
         data_r = data_r.reshape(shape)
     else:
