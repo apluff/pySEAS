@@ -204,7 +204,7 @@ class PyseasConfig:
     n_components: int = None
     crop_excess_noise: bool = True
     svd_multiplier: float = 5
-    calc_residuals: bool = True
+    calc_residuals: bool = False
     projector: str = 'FastICA'
     max_iter: int = None
 
