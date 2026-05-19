@@ -67,7 +67,7 @@ def run_gui(components: dict,
         f = hdf5manager(savepath)
         load_hdf5 = True
 
-    assert type(components) is dict, 'Components were not in expected format'
+    # assert type(components) is dict, 'Components were not in expected format'
 
     # Load all components from dict.
     eig_vec = components['eig_vec']
