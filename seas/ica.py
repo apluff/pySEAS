@@ -69,6 +69,22 @@ class PyseasRecord(MutableMapping):
         return (len([f for f in fields(self) if not f.name.startswith("_")])
                 + len(self._extra))
 
+    def __post_init__(self):
+        if self.mean.ndim > 1:  # why is there sometimes an extra dimension added?
+            self.mean = self.mean.flatten()
+
+        # Make sure vector extracted properly matches the roimask given.
+        _, x, y = self.shape
+        if self.roimask is None:
+            self.maskind = None
+            assert self.eig_vec[:, 0].size == x * y, (
+                "Eigenvector size isn't compatible with the shape of the output "
+                'matrix')
+        else:
+            self.maskind = np.where(self.roimask.flat == 1)
+            assert self.eig_vec[:,0].size == self.maskind[0].size, \
+            "Eigenvector size is not compatible with the masked region's size"
+
     def save_creation_metadata(self, projection: str, n_components: int, time_elapsed: float):
         # Save filter metadata information about how and when movie was filtered in dictionary.
         project_meta = {}
@@ -446,12 +462,12 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     config = Config
     input = Input
 
-    # ============= Preprocessing ============= #
+    # ========================== Preprocessing ========================== #
 
     mean = np.mean(input.vector, 0).flatten()
     vector = input.vector - mean
     
-    # ============= Projection ============= #
+    # ========================== Projection ========================== #
 
     # TODO: Add cases
     match config.projector:
@@ -472,7 +488,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     timecourses = eig_mix.T
     lag1 = lag_n_autocorr(timecourses, 1)
 
-    # ============= Saving ============= #  
+    # ========================== Saving ========================== #  
 
     components = PyseasRecord(mean = mean,
                               roimask = input.roimask,
@@ -490,7 +506,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
                               lag1_full = lag1_full)
     components.save_creation_metadata(config.projector, n_components, t)
 
-    # ============= Postprocessing ============= #
+    # ========================== Postprocessing ========================== #
 
     # Sort components by timecourse standard deviation per pyseas default
     sorted_components = sort_components(sort_by = 'timecourse_std', 
@@ -521,7 +537,27 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     print('\n')
     return components
 
-def rebuild(components: dict,
+def derive_reconstruct_indices(components: dict, 
+                               artifact_components: np.ndarray = None, 
+                               include_noise: bool = False) -> np.ndarray:
+    n_components = components['n_components']
+
+    if artifact_components is None:
+        artifact_components = components['artifact_components']
+    elif artifact_components == 'none':
+        print('including all components')
+        artifact_components = np.zeros(n_components)
+    
+    if ((not include_noise) and ('noise_components' in components.keys())):
+        print('Not rebuilding noise components')
+        artifact_components += components['noise_components']
+        artifact_components[np.where(artifact_components > 1)] = 1
+
+    reconstruct_indices = np.where(artifact_components == 0)[0]
+
+    return reconstruct_indices
+
+def rebuild(components: dict | str,
             artifact_components: np.ndarray = None,
             t_start: int = None,
             t_stop: int = None,
@@ -534,9 +570,10 @@ def rebuild(components: dict,
             cthresh: float = 2.0,
             apply_masked_mean: bool = False,
             binary_threshold: bool = False,
-            filter_method: str = 'butterworth_highpass',
+            filter_method: str = 'wavelet',
             fps: float = 7.5,
-            include_noise: bool = True):
+            include_noise: bool = True,
+            splitting: str = None):
     '''
     Rebuild original vector space based on a subset of principal 
     components of the data.  Eigenvectors to use are specified where 
@@ -578,148 +615,202 @@ def rebuild(components: dict,
     Returns:
         data_r: The ICA filtered video.
     '''
+    def _rebuild_full_video(eig_vec, eig_mix, 
+                        mean, reconstruct_indices, 
+                        t_start, t_stop,
+                        shape, roimask, maskind):
+        print('\nReconstructing full video...')
+        data_r = np.dot(eig_vec[:, reconstruct_indices],
+                        eig_mix[t_start:t_stop, reconstruct_indices].T).T
+        # Re-add mean timecourse
+        data_r += mean[t_start:t_stop, None]
+        print('Done!')
+        # Reshaping
+        data_r = reshape_rebuilt_video(data_r, shape, roimask, maskind)
+
+        return data_r
+
+    def _rebuild_component_videos(eig_vec, eig_mix, 
+                                mean, reconstruct_indices, 
+                                t_start, t_stop,
+                                shape, roimask, maskind):
+        print('\nReconstructing per component...')
+        data_r = {}
+        for i in reconstruct_indices:
+            data_s = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
+            data_c = np.stack(data_s, axis = 0)
+            data_c += mean[t_start:t_stop, None]
+            data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+            data_c = scale_dfof_to_8bit(data_c)
+            data_r[i] = data_c
+        
+        return data_r
+
+    def _rebuild_cluster_videos(eig_vec, eig_mix, 
+                                mean, cluster_indices, 
+                                t_start, t_stop,
+                                shape, roimask, maskind):
+            print('\nReconstructing per cluster...')
+            data_r = {}
+            for i in cluster_indices[0]:
+                if len(cluster_indices[i]) == 1:
+                    data_c = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
+                else:    
+                    data_c = np.dot(eig_vec[:, cluster_indices[i]],
+                                    eig_mix[t_start:t_stop, cluster_indices[i]].T).T
+                data_c += mean[t_start:t_stop, None]
+                data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+                data_c = scale_dfof_to_8bit(data_c)
+                data_r[i] = data_c
+            
+            return data_r
+
     print('\nRebuilding Data from Selected ICs\n-----------------------')
 
     if type(components) is str:
         f = hdf5manager(components)
         components = f.load()
 
-    assert type(components) is dict, 'Components were not in format expected'
+    #assert type(components) is dict, 'Components were not in format expected'
 
-    # Localising variables (will work fine with PyseasRecord)
-    eig_vec = components['eig_vec']
-    eig_mix = components['eig_mix']
-    roimask = components['roimask']
-    shape = components['shape']
-    mean = components['mean']
-    n_components = components['n_components']
-
-    # This variable could use a new name?
+    # Localising variables
+    eig_vec = components.eig_vec
+    eig_mix = components.eig_mix
+    shape = components.shape
+    roimask = components.roimask
+    maskind = components.maskind
     dtype = np.float32
-
     t, x, y = shape
-    l = eig_vec[:, 0].size
 
-    if mean.ndim > 1:  # why is there sometimes an extra dimension added?
-        mean = mean.flatten()
-
-
-    # Determining reconstruction indices
-    if artifact_components is None:
-        artifact_components = components['artifact_components']
-    elif artifact_components == 'none':
-        print('including all components')
-        artifact_components = np.zeros(n_components)
-    
-    if ((not include_noise) and ('noise_components' in components.keys())):
-        print('Not rebuilding noise components')
-        artifact_components += components['noise_components']
-        artifact_components[np.where(artifact_components > 1)] = 1
-
-    reconstruct_indices = np.where(artifact_components == 0)[0]
-
+    # Determine reconstruction indices
+    reconstruct_indices = derive_reconstruct_indices(components, 
+                                                     artifact_components, 
+                                                     include_noise)
     if reconstruct_indices.size == 0:
         print('No indices were selected for reconstruction.')
         print('Returning empty matrix...')
         data_r = np.zeros((t, x, y), dtype='uint8')
         data_r = data_r[t_start:t_stop]
         return data_r
-
     n_components = reconstruct_indices.size
 
-    # Data validation (can probably do this in PyseasRecord?)
-    # Make sure vector extracted properly matches the roimask given.
-    if roimask is None:
-        assert eig_vec[:, 0].size == x * y, (
-            "Eigenvector size isn't compatible with the shape of the output "
-            'matrix')
+    # Determine cluster indices
+    if hasattr(components, 'clusters') and components.clusters is not None:
+        cluster_indices = {}
+        for i in np.unique(components.clusters):
+            current_cluster_indices = np.where(components.clusters == i)
+            cluster_indices[i] = np.intersect1d(current_cluster_indices, 
+                                                reconstruct_indices)
+
+    # Filter mean timecourse
+    if apply_mean_filter:
+        mean = filter_mean(components.mean, 
+                           filter_method, 
+                           low_cutoff = mlow, 
+                           high_cutoff = mhigh, 
+                           fps = fps)
     else:
-        maskind = np.where(roimask.flat == 1)
-        assert eig_vec[:,0].size == maskind[0].size, \
-        "Eigenvector size is not compatible with the masked region's size"
+        print('Not filtering mean timecourse.')
 
     # Filter component timecourses
     if apply_component_filter:
-        lpf_eig_mix = filter_components(eig_mix, fps=fps, high_cutoff=chigh)
+        lpf_eig_mix = filter_components(eig_mix, 
+                                        fps = fps, 
+                                        high_cutoff = chigh)
         eig_mix = lpf_eig_mix
+    else:
+        print('Not filtering component timecourses.')
 
     # Threshold component timecourses
     if apply_component_threshold:
-        thresh_eig_mix = threshold_components(eig_mix, thresh_param=cthresh)
+        thresh_eig_mix = threshold_components(eig_mix, thresh_param = cthresh)
         eig_mix = thresh_eig_mix
+    else:
+        print('Not thresholding component timecourses.')
 
-
-    # Determining start and stop bounds
+    # Determine start and stop bounds
     if (t_start == None):
         t_start = 0
-
     if (t_stop == None):
         t_stop = eig_mix.shape[0]
-
     if (t_stop - t_start) is not shape[0]:
         shape = (t_stop - t_start, shape[1], shape[2])
-
     t = t_stop - t_start
 
+    # Reconstruction
     print('\nRebuilding ICA...')
     print('number of elements included:', n_components)
     print('eig_vec:', eig_vec.shape)
     print('eig_mix:', eig_mix.shape)
-
-    # Actual reconstruction
-    print('\nReconstructing....')
-    data_r = np.dot(eig_vec[:, reconstruct_indices],
-                    eig_mix[t_start:t_stop, reconstruct_indices].T).T
+    match splitting:
+        case None:
+            data_r = _rebuild_full_video(eig_vec, eig_mix, mean,
+                                         reconstruct_indices, t_start, 
+                                         t_stop, shape, roimask, maskind)
+        case 'components':
+            data_r = _rebuild_component_videos(eig_vec, eig_mix, mean,
+                                               reconstruct_indices, t_start, 
+                                               t_stop, shape, roimask, maskind)
+        case 'clusters':
+            data_r = _rebuild_cluster_videos(eig_vec, eig_mix, mean,
+                                             cluster_indices, t_start, 
+                                             t_stop, shape, roimask, maskind)
+        
     # spatiotemporal_event_masks = data_r[data_r > 0]
 
-    # More of my extra stuff, integration could be clearer.
-    if apply_masked_mean:
-        # Apply mean to masks only, zeroing unmasked pixels
-        spatiotemporal_event_masks = np.zeros_like(data_r)
-        spatiotemporal_event_masks[data_r > 0] = 255
-        spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
-        masks = components['thresh_masks']
-        assert masks is not None, \
-        "Masks have not been assigned to dictionary"
-        if apply_mean_filter:
-            combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
-            mean_to_add = np.zeros_like(data_r)
-            mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
-            mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
-            data_r += mean_to_add
-            data_r[~spatiotemporal_event_masks] = 0
+    # # More of my extra stuff, integration could be clearer.
+    # if apply_masked_mean:
 
-        else:
-            print('Not filtering mean')
-            combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
-            mean_to_add = np.zeros_like(data_r)
-            mean_filtered = None
-            mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
-            data_r += mean_to_add
-            data_r[~spatiotemporal_event_masks] = 0
-    else:
-        # Run original readdition of mean
-        if apply_mean_filter:
-            mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
-            data_r += mean_filtered[t_start:t_stop, None]
+    #     # Apply mean to masks only, zeroing unmasked pixels
+    #     spatiotemporal_event_masks = np.zeros_like(data_r)
+    #     spatiotemporal_event_masks[data_r > 0] = 255
+    #     spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
+    #     masks = components['thresh_masks']
+    #     assert masks is not None, \
+    #     "Masks have not been assigned to dictionary"
+    #     if apply_mean_filter:
+    #         combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
+    #         mean_to_add = np.zeros_like(data_r)
+    #         mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
+    #         mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
+    #         data_r += mean_to_add
+    #         data_r[~spatiotemporal_event_masks] = 0
 
-        else:
-            print('Not filtering mean')
-            mean_filtered = None
-            data_r += mean[t_start:t_stop, None]
+    #     else:
+    #         print('Not filtering mean')
+    #         combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
+    #         mean_to_add = np.zeros_like(data_r)
+    #         mean_filtered = None
+    #         mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
+    #         data_r += mean_to_add
+    #         data_r[~spatiotemporal_event_masks] = 0
+    # else:
+    #     # Run original readdition of mean
+    #     if apply_mean_filter:
+    #         mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
+    #         data_r += mean_filtered[t_start:t_stop, None]
 
-    if binary_threshold:
-        data_binary = np.zeros(data_r)
-        data_binary[data_r > 0] = 255
-        data_r = data_binary
+    #     else:
+    #         print('Not filtering mean')
+    #         mean_filtered = None
+    #         data_r += mean[t_start:t_stop, None]
 
-    print('Done!')
+    # if binary_threshold:
+    #     data_binary = np.zeros(data_r)
+    #     data_binary[data_r > 0] = 255
+    #     data_r = data_binary
 
-    # Reshaping
+    return data_r
+
+def reshape_rebuilt_video(data_r: np.ndarray, 
+                          shape: Tuple[int, int, int], 
+                          roimask: np.ndarray = None, 
+                          maskind: np.ndarray = None):
     if roimask is None:
         data_r = data_r.reshape(shape)
     else:
-        reconstructed = np.zeros((x * y, t), dtype=dtype)
+        t, x, y = shape
+        reconstructed = np.zeros((x * y, t), dtype=np.float32)
         print(f'data_r shape is: {data_r.shape}')
         print(f'reconstructed shape is: {reconstructed.shape}')
         print(f'maskind is: {maskind}')
@@ -727,6 +818,14 @@ def rebuild(components: dict,
         reconstructed = reconstructed.swapaxes(0, 1)
         data_r = reconstructed.reshape(t, x, y)
 
+    return data_r
+
+def scale_dfof_to_8bit(data_r: np.ndarray) -> np.ndarray:
+    assert data_r.dtype == np.float32, "Data is not in dF/F format."
+    data_r[data_r < 0.0] = 0.0
+    data_r = data_r*255
+    data_r[data_r > 255.0] = 255.0
+    data_r = data_r.astype(np.uint8)
     return data_r
 
 def rebuild_split_components(components: dict,
@@ -938,7 +1037,7 @@ def rebuild_split_components(components: dict,
         data_r = data_r.astype(np.uint8)
         #data_r[data_r > 0] = 255
         tif.imwrite('/QRISdata/Q5451/temp/tests/pyseas_split_components/' + comp_out, data_r,compression='lzw', imagej=True)
-            
+
 def rebuild_split_clusters(components: dict,
             artifact_components: np.ndarray = None,
             t_start: int = None,
