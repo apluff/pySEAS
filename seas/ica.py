@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Dict
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
+import zarr
 
 @dataclass
 class PyseasRecord(MutableMapping):
@@ -524,7 +525,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     components.update(sorted_components)
 
     # Crop excess noise components from record
-    if config.crop_excess_noise:
+    if config.crop_excess_noise and config.n_components is None:
         cropped_components = crop_excess_noise(components)
         if cropped_components is not None:
             components.update(cropped_components)
@@ -646,15 +647,22 @@ def rebuild(components: dict | str,
                                 shape, roimask, maskind):
         print('\nReconstructing per component...')
         data_r = {}
-        for i in reconstruct_indices:
+        for idx in reconstruct_indices:
+            i = idx + 1 # Convert to 1-base for component labelling
+            print('\nRebuilding component: ', i)
             data_s = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
             data_c = np.stack(data_s, axis = 0)
             #Re-add mean timecourse
             data_c += mean[t_start:t_stop, None]
             # Reshaping
-            data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
             data_c = scale_dfof_to_8bit(data_c)
-            data_r[i] = data_c
+            data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+            # Assign to compressed array (defaults to zstd)
+            data_z = zarr.create_array(shape = data_c.shape, 
+                                       chunks = (8, 8), 
+                                       dtype = data_c.dtype)
+            data_z[:] = data_c
+            data_r[int(i)] = data_z
         
         return data_r
 
@@ -673,7 +681,7 @@ def rebuild(components: dict | str,
                 data_c += mean[t_start:t_stop, None]
                 data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
                 data_c = scale_dfof_to_8bit(data_c)
-                data_r[i] = data_c
+                data_r[int(i)] = data_c
             
             return data_r
 
@@ -691,6 +699,7 @@ def rebuild(components: dict | str,
     shape = components.shape
     roimask = components.roimask
     maskind = components.maskind
+    mean = components.mean
     t, x, y = shape
 
     # Determine reconstruction indices
@@ -715,7 +724,7 @@ def rebuild(components: dict | str,
 
     # Filter mean timecourse
     if apply_mean_filter:
-        mean = filter_mean(components.mean, 
+        mean = filter_mean(mean, 
                            filter_method, 
                            low_cutoff = mlow, 
                            high_cutoff = mhigh, 
