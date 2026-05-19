@@ -182,14 +182,12 @@ class _FastICA(Projector):
                     print('\tReduced to:', input.shape[0])
 
         if self.n_components is None:
-            lag1_full = lag_n_autocorr(eig_mix.T, 1)
             svd_cutoff = n_components
-        else: # For compatability with original pySEAS dicts
-            lag1_full = None # Maybe change this to return all the time.
+        else:
             svd_cutoff = None
         # ========================= FINISH ICA BLOCK ======================== #
 
-        return n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff
+        return n_components, eig_vec, eig_mix, noise, cutoff, svd_cutoff, increased_cutoff
 
 
 class _InfoMaxICA(Projector):
@@ -358,22 +356,32 @@ def crop_excess_noise(components: PyseasRecord) -> dict:
         eig_mix = eig_mix[:, :reduced_n_components]
         n_components = reduced_n_components
         noise_components = noise[:reduced_n_components]
+        
+        # Recalculate lag1 for reduced components
+        timecourses = eig_mix.T
+        lag1 = lag_n_autocorr(timecourses, 1)
 
         output = {}
         output['eig_vec'] = eig_vec
         output['eig_mix'] = eig_mix
         output['n_components'] = n_components
         output['noise_components'] = noise_components
+        output['lag1'] = lag1
 
         return output
     else:
         print('Less than 75% signal.  Not cropping excess noise.')
 
-def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = None) -> dict:
+def sort_components(sort_by: str = 'timecourse_std', 
+                    components: PyseasRecord = None) -> dict:
+    '''
+    Sorts components by some metric before cropping excess noise.
+    '''
     assert components is not None, 'PyseasRecord must be provided for sort.'
     eig_mix = components.eig_mix
     eig_vec = components.eig_vec
     noise = components.noise_components
+    lag1 = components.lag1
     lag1_full = components.lag1_full
     match sort_by:
         case 'timecourse_std': # Original pySEAS default.
@@ -385,13 +393,14 @@ def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = 
     eig_vec = eig_vec[:, ev_sort][:, ::-1]
     eig_mix = eig_mix[:, ev_sort][:, ::-1]
     noise_components = noise[ev_sort][::-1]
-    if lag1_full is not None:
-        lag1_full = lag1_full[ev_sort][::-1]
+    lag1 = [ev_sort][::-1]
+    lag1_full = lag1_full[ev_sort][::-1]
 
     output = {}
     output['eig_vec'] = eig_vec
     output['eig_mix'] = eig_mix
     output['noise_components'] = noise_components
+    output['lag1'] = lag1
     output['lag1_full'] = lag1_full
 
     return output
@@ -476,7 +485,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
                                   max_iter = config.max_iter)
 
     t0 = timer()
-    n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff \
+    n_components, eig_vec, eig_mix, noise, cutoff, svd_cutoff, increased_cutoff \
         = calculator.project(vector)
     t = timer() - t0
     print('Independent Component Analysis took: {0} sec'.format(t))
@@ -486,7 +495,8 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     assert n_components == eig_vec.shape[1], "HUUUHHHH????"
 
     timecourses = eig_mix.T
-    lag1 = lag_n_autocorr(timecourses, 1)
+    lag1_full = lag_n_autocorr(timecourses, 1)
+    lag1 = lag1_full
 
     # ========================== Saving ========================== #  
 
@@ -520,7 +530,7 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
             components.update(cropped_components)
     else:
         print('Noise retention enabled. Not cropping excess noise.')
-
+    
     # Calculate residuals
     if config.calc_residuals:
         try:
@@ -639,7 +649,9 @@ def rebuild(components: dict | str,
         for i in reconstruct_indices:
             data_s = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
             data_c = np.stack(data_s, axis = 0)
+            #Re-add mean timecourse
             data_c += mean[t_start:t_stop, None]
+            # Reshaping
             data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
             data_c = scale_dfof_to_8bit(data_c)
             data_r[i] = data_c
@@ -679,7 +691,6 @@ def rebuild(components: dict | str,
     shape = components.shape
     roimask = components.roimask
     maskind = components.maskind
-    dtype = np.float32
     t, x, y = shape
 
     # Determine reconstruction indices
@@ -694,7 +705,7 @@ def rebuild(components: dict | str,
         return data_r
     n_components = reconstruct_indices.size
 
-    # Determine cluster indices
+    # Determine cluster indices (if available)
     if hasattr(components, 'clusters') and components.clusters is not None:
         cluster_indices = {}
         for i in np.unique(components.clusters):
@@ -736,6 +747,8 @@ def rebuild(components: dict | str,
     if (t_stop - t_start) is not shape[0]:
         shape = (t_stop - t_start, shape[1], shape[2])
     t = t_stop - t_start
+
+    #eig_mix = eig_mix[t_start:t_stop, :]
 
     # Reconstruction
     print('\nRebuilding ICA...')
@@ -810,7 +823,7 @@ def reshape_rebuilt_video(data_r: np.ndarray,
         data_r = data_r.reshape(shape)
     else:
         t, x, y = shape
-        reconstructed = np.zeros((x * y, t), dtype=np.float32)
+        reconstructed = np.zeros((x * y, t), dtype = np.float32)
         print(f'data_r shape is: {data_r.shape}')
         print(f'reconstructed shape is: {reconstructed.shape}')
         print(f'maskind is: {maskind}')
