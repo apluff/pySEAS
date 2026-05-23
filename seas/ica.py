@@ -210,7 +210,8 @@ class _PicardICA(Projector):
     def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, int]:
         '''
         Replicates original FastICA processing in conjunction with the
-        top-level function project() (original wrapper) per Weiser et al. 2023.
+        top-level function project() (original wrapper) per Weiser et al. 2023,
+        using PicardICA's scikit API as a drop-in replacement.
         '''
         # ========================= START ICA BLOCK ======================== #
         increased_cutoff = 0
@@ -332,11 +333,11 @@ class PyseasConfig:
     max_iter: int = None
 
     def __post_init__(self):
-        valid_projectors = ['FastICA', 'InfoMax', 'JADE', 'PCA']
+        valid_projectors = ['FastICA', 'InfoMax', 'JADE', 'Picard', 'PCA']
         
         assert self.projector in valid_projectors, \
             'Specified projector is not valid, must be "FastICA", "InfoMax",' \
-            ' "JADE", or "PCA".'
+            ' "JADE", "Picard", or "PCA".'
         if self.n_components is None:
             assert self.svd_multiplier is not None, \
                 'n_components is unset, so SVD multiplier must be specified.'
