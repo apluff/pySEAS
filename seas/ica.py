@@ -291,7 +291,7 @@ class _PCA(Projector):
     def __init__(self):
         pass
 
-    def project(vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def project(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         try:
             u, ev, v = linalg.svd(vector, full_matrices = False)
             print('PCA run with scipy.linalg.svd and gesdd lapack.')
