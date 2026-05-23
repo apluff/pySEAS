@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Dict
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
+from picard import Picard
 
 @dataclass
 class PyseasRecord(MutableMapping):
@@ -195,13 +196,120 @@ class _FastICA(Projector):
 class _InfoMaxICA(Projector):
     pass
 
-
 class _JadeICA(Projector):
     pass
 
+class _PicardICA(Projector):
+    def __init__(self, 
+                 n_components = None, 
+                 svd_multiplier = None, 
+                 max_iter = 1000):
+        self.n_components = n_components
+        self.svd_multiplier = svd_multiplier
+        self.max_iter = max_iter
+
+    def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, int]:
+        '''
+        Replicates original FastICA processing in conjunction with the
+        top-level function project() (original wrapper) per Weiser et al. 2023.
+        '''
+        # ========================= START ICA BLOCK ======================== #
+        increased_cutoff = 0
+        if self.n_components is None:
+            u, n_components = estimate_n_components(vector, 
+                                                    self.svd_multiplier)
+            w_init = u[:n_components, :n_components].astype('float64')
+        else:
+            n_components = self.n_components
+            w_init = None
+            
+        while True:
+            print('\nCalculating ICA with', n_components, 'components...')
+
+            ica = Picard(n_components = n_components,
+                         max_iter = 500, # Default for testing
+                         random_state = 1000,
+                         w_init = w_init)
+
+            try:
+                eig_vec = ica.fit_transform(vector)  # Eigenbrains
+            except ValueError:
+                print('Calculation exceeded float32 maximum.')
+                print('Trying again with float64 vector...')
+                # Value error if any value exceeds float32 maximum.
+                # Overcome this by converting to float64.
+                eig_vec = ica.fit_transform(vector.astype('float64'))
+            print("n_iter:" , ica.n_iter_)
+            
+            eig_mix = ica.mixing_
+            noise, cutoff = sort_noise(eig_mix.T)
+
+            #Signal/noise check #1
+            p_signal = (1 - noise.sum() / noise.size) * 100
+            if self.n_components is not None: # No dynamic threshold required
+                break
+            elif noise.size == input.shape[0]:  # All components are being used.
+                break
+            elif p_signal < 75:
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                break
+            elif n_components >= input.shape[0]:
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('However, number of components is maxed out.')
+                print('Using this decomposition...')
+                break
+            else:
+                print('ICA components were over 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('Recalculating with more components...')
+                n_components += n_components // 2
+                increased_cutoff += 1
+
+                if n_components > input.shape[0]:
+                    print('\nComponents maxed out!')
+                    print('\tAttempted:', n_components)
+                    n_components = input.shape[0]
+                    print('\tReduced to:', input.shape[0])
+
+        if self.n_components is None:
+            lag1_full = lag_n_autocorr(eig_mix.T, 1)
+            svd_cutoff = n_components
+        else: # For compatability with original pySEAS dicts
+            lag1_full = None # Maybe change this to return all the time.
+            svd_cutoff = None
+        # ========================= FINISH ICA BLOCK ======================== #
+
+        return n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff
+
+class _AMICA(Projector):
+    pass
 
 class _PCA(Projector):
-    pass
+
+    def __init__(self):
+        pass
+
+    def project(vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        try:
+            u, ev, v = linalg.svd(vector, full_matrices = False)
+            print('PCA run with scipy.linalg.svd and gesdd lapack.')
+        except ValueError:
+            try:
+                print('Initial PCA failed.')
+                # LAPACK error if matricies are too big
+                u, ev, _ = linalg.svd(vector,
+                                      full_matrices = False,
+                                      lapack_driver = 'gesvd')
+                print('PCA run with scipy.linalg.svid and gesvd lapack.')
+            except ValueError:
+                print('Secondary PCA failed.')
+                u, ev, _ = np.linalg.svd(vector,
+                                         full_matrices = False)
+                print('PCA run with numpy.linalg.svd.')
+        
+        return u, ev, v
 
 
 @dataclass
@@ -274,19 +382,12 @@ class PyseasInput:
             self.vector = self.vector[self.maskind]
             print('Original vector reduced to size:', self.vector.shape)
 
-def estimate_n_components(vector, svd_multiplier) -> Tuple[np.ndarray, int]:
+def estimate_n_components(vector: np.ndarray, 
+                          svd_multiplier: float,
+                          Estimator: Projector = _PCA) -> Tuple[np.ndarray, int]:
+    estimator = Estimator
     print('Estimating n_components with SVD...')
-    try:
-        u, ev, _ = linalg.svd(vector, full_matrices=False)
-    except ValueError:
-        try:
-            # LAPACK error if matricies are too big
-            u, ev, _ = linalg.svd(vector,
-                                    full_matrices=False,
-                                    lapack_driver='gesvd')
-        except ValueError:
-            u, ev, _ = np.linalg.svd(vector,
-                                        full_matrices=False)
+    u, ev, _ = estimator.project(vector)
     # components['svd_eigval'] = ev # Not used anywhere, should I store this?
 
     # Get starting point for decomposition based on svd mutliplier * the approximate
@@ -369,7 +470,8 @@ def crop_excess_noise(components: PyseasRecord) -> dict:
     else:
         print('Less than 75% signal.  Not cropping excess noise.')
 
-def sort_components(sort_by: str = 'timecourse_std', components: PyseasRecord = None) -> dict:
+def sort_components(sort_by: str = 'timecourse_std', 
+                    components: PyseasRecord = None) -> dict:
     assert components is not None, 'PyseasRecord must be provided for sort.'
     eig_mix = components.eig_mix
     eig_vec = components.eig_vec
@@ -474,6 +576,11 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
         case 'FastICA':
             calculator = _FastICA(n_components = config.n_components, 
                                   max_iter = config.max_iter)
+        case 'PicardICA':
+            calculator = _PicardICA(n_components = config.n_components,
+                                    max_iter = config.max_iter)
+        case 'PCA':
+            calculator = _PCA()
 
     t0 = timer()
     n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff \
