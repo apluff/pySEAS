@@ -25,16 +25,62 @@ from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
 import zarr
 from picard import Picard
+from sklearn.utils.extmath import randomized_svd
 
 @dataclass
 class PyseasRecord(MutableMapping):
+    '''
+    The primary output data structure for pySEAS experiments, PyseasRecord
+    is implemented as a dataclass/dictionary hybrid, enabling both reads and
+    writes as a dataclass per new refactoring work, and a dictionary interface
+    for legacy pySEAS code.
+
+    Attributes:
+        mean: 
+            the original video mean
+        roimask: 
+            the mask applied to the video before decomposing
+        shape: 
+            the original shape of the movie array
+        eig_mix: 
+            the ICA mixing matrix
+        timecourses: 
+            the ICA component time series
+        eig_vec: 
+            the eigenvectors
+        n_components:
+            the number of components in eig_vec (reduced to only have 25% 
+            of total components as noise)
+        project_meta:
+            The metadata for the ica projection
+        expmeta:
+            All metadata created for this class
+        lag1: 
+            the lag-1 autocorrelation
+        noise_components: 
+            a vector (n components long) to store binary representation of 
+            which components were detected as noise 
+        cutoff: 
+            the signal-noise cutoff value
+
+    if the n_components was automatically set, the following keys are also
+    set in components (otherwise default to None)
+
+        svd_cutoff: 
+            the number of components originally decomposed
+        lag1_full: 
+            the lag-1 autocorrelation of the full set of components 
+            decomposed before cropping to only 25% noise components
+        svd_multiplier: 
+            the svd multiplier value used to determine cutoff
+    '''
     mean:  np.ndarray
     roimask: np.ndarray
     shape: Tuple[int, int, int]
     eig_mix: np.ndarray
     timecourses: np.ndarray
     eig_vec: np.ndarray
-    n_components: int
+    n_components: int 
     lag1: np.ndarray
     lag1_full: np.ndarray
     noise_components: np.ndarray
@@ -87,7 +133,11 @@ class PyseasRecord(MutableMapping):
             assert self.eig_vec[:,0].size == self.maskind[0].size, \
             "Eigenvector size is not compatible with the masked region's size"
 
-    def save_creation_metadata(self, projection: str, n_components: int, time_elapsed: float):
+    def save_creation_metadata(self, 
+                               projection: str, 
+                               estimator: str,
+                               n_components: int, 
+                               time_elapsed: float):
         # Save filter metadata information about how and when movie was filtered in dictionary.
         project_meta = {}
         project_meta['time_elapsed'] = time_elapsed
@@ -98,6 +148,7 @@ class PyseasRecord(MutableMapping):
             datetime.now().strftime(fmt)
         project_meta['n_components'] = n_components
         project_meta['projection'] = projection
+        project_meta['estimator'] = estimator
         self.project_meta = project_meta
 
 
@@ -118,7 +169,7 @@ class _FastICA(Projector):
         self.svd_multiplier = svd_multiplier
         self.max_iter = max_iter
 
-    def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, int]:
+    def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int]:
         '''
         Replicates original FastICA processing in conjunction with the
         top-level function project() (original wrapper) per Weiser et al. 2023.
@@ -183,20 +234,18 @@ class _FastICA(Projector):
                     n_components = input.shape[0]
                     print('\tReduced to:', input.shape[0])
 
-        if self.n_components is None:
-            svd_cutoff = n_components
-        else:
-            svd_cutoff = None
         # ========================= FINISH ICA BLOCK ======================== #
 
-        return n_components, eig_vec, eig_mix, noise, cutoff, svd_cutoff, increased_cutoff
+        return n_components, eig_vec, eig_mix, noise, cutoff, increased_cutoff
 
 
 class _InfoMaxICA(Projector):
     pass
 
+
 class _JadeICA(Projector):
     pass
+
 
 class _PicardICA(Projector):
     def __init__(self, 
@@ -283,8 +332,10 @@ class _PicardICA(Projector):
 
         return n_components, eig_vec, eig_mix, lag1_full, noise, cutoff, svd_cutoff, increased_cutoff
 
+
 class _AMICA(Projector):
     pass
+
 
 class _PCA(Projector):
 
@@ -302,13 +353,25 @@ class _PCA(Projector):
                 u, ev, _ = linalg.svd(vector,
                                       full_matrices = False,
                                       lapack_driver = 'gesvd')
-                print('PCA run with scipy.linalg.svid and gesvd lapack.')
+                print('PCA run with scipy.linalg.svd and gesvd lapack.')
             except ValueError:
                 print('Secondary PCA failed.')
                 u, ev, _ = np.linalg.svd(vector,
                                          full_matrices = False)
                 print('PCA run with numpy.linalg.svd.')
         
+        return u, ev, v
+
+
+class _randomizedSVD(Projector):
+
+    def __init__(self):
+        pass
+
+    def project(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        n_components = np.min(vector.shape)
+        u, ev, v = randomized_svd(vector, n_components, n_oversamples = 100)
+
         return u, ev, v
 
 
@@ -324,26 +387,41 @@ class PyseasConfig:
             Whether to calculate spatial and temporal residuals of projection compression.
         max_iter:
             Maximum iterations assigned for FastICA
+        projector:
+            Which projection method to use to decompose source video.
+        estimator:
+            Where n_components is unset, which estimator to use to
+            input a reduced n_components for ICA projections.
     '''
     n_components: int = None
     crop_excess_noise: bool = True
     svd_multiplier: float = 5
     calc_residuals: bool = False
-    projector: str = 'FastICA'
     max_iter: int = None
+    projector: str = 'fastiCa'
+    estimator: str = 'svd'
 
     def __post_init__(self):
-        valid_projectors = ['FastICA', 'InfoMax', 'JADE', 'Picard', 'PCA']
+        valid_projectors = ['fastica', 'infomax', 'jade', 'picard', 'pca']
+        valid_estimators = ['none', 'svd', 'randomized_svd']
         
         assert self.projector in valid_projectors, \
-            'Specified projector is not valid, must be "FastICA", "InfoMax",' \
-            ' "JADE", "Picard", or "PCA".'
+            'Specified projector is not valid, must be "fastica", "infomax",' \
+            ' "jade", "picard", or "pca".'
+        assert self.estimator in valid_estimators, \
+            'Specified estimator is not valid, must be "svd" or' \
+            ' "randomized_svd.'
         if self.n_components is None:
             assert self.svd_multiplier is not None, \
                 'n_components is unset, so SVD multiplier must be specified.'
+            assert self.estimator is not 'none', \
+                'n_components is unset, so estimator must be set to "svd" or' \
+                    ' "randomized_svd".'
         else:
-            'n_components has been specified, erasing svd_multiplier.'            
+            'n_components has been specified, erasing svd_multiplier and' \
+                ' estimator.'            
             self.svd_multiplier = None
+            self.estimator = 'none'
         
 
 @dataclass
@@ -384,14 +462,21 @@ class PyseasInput:
 
 def estimate_n_components(vector: np.ndarray, 
                           svd_multiplier: float,
-                          Estimator: Projector = _PCA) -> Tuple[np.ndarray, int]:
-    estimator = Estimator
-    print('Estimating n_components with SVD...')
-    u, ev, _ = estimator.project(vector)
+                          estimator: str) -> Tuple[np.ndarray, int]:
+    
+    match estimator:
+        case 'svd':
+            calculator = _PCA()
+            print('Estimating n_components with SVD...')
+        case 'randomized_svd':
+            calculator = _randomizedSVD()
+            print('Estimating n_components with randomized SVD...')
+
+    u, ev, _ = calculator.project(vector)
     # components['svd_eigval'] = ev # Not used anywhere, should I store this?
 
-    # Get starting point for decomposition based on svd mutliplier * the approximate
-    # point of transition to linearity in tail of ev components.
+    # Get starting point for decomposition based on svd mutliplier * the 
+    # approximate point of transition to linearity in tail of ev components.
     cross_1 = approximate_svd_linearity_transition(ev)
     n_components = cross_1 * svd_multiplier
     
@@ -492,7 +577,7 @@ def sort_components(sort_by: str = 'timecourse_std',
             # NOTE: This doesn't guarantee all removed components are noise.
             ev_sort = np.argsort(eig_mix.std(axis=0))
         case 'lag1': # Guarantees correct ordering for noise cropping
-            ev_sort = np.argsort(eig_mix.std(axis=0))
+            ev_sort = np.argsort(noise)
     eig_vec = eig_vec[:, ev_sort][:, ::-1]
     eig_mix = eig_mix[:, ev_sort][:, ::-1]
     noise_components = noise[ev_sort][::-1]
@@ -510,7 +595,7 @@ def sort_components(sort_by: str = 'timecourse_std',
 
 def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     '''
-    Apply an ica decomposition to the first axis of the input vector.  
+    Apply an ICA decomposition to the first axis of the input vector.  
     If a roimask was provided, the flattened roimask will be used to crop the 
     vector before decomposition.
 
@@ -529,51 +614,13 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
             a PyseasConfig object containing config for the projection process.
         
     Returns:
-        components: A PyseasRecord dictionary containing all the results, 
-        metadata, and information regarding the filter applied.
-
-            mean: 
-                the original video mean
-            roimask: 
-                the mask applied to the video before decomposing
-            shape: 
-                the original shape of the movie array
-            eig_mix: 
-                the ICA mixing matrix
-            timecourses: 
-                the ICA component time series
-            eig_vec: 
-                the eigenvectors
-            n_components:
-                the number of components in eig_vec (reduced to only have 25% 
-                of total components as noise)
-            project_meta:
-                The metadata for the ica projection
-            expmeta:
-                All metadata created for this class
-            lag1: 
-                the lag-1 autocorrelation
-            noise_components: 
-                a vector (n components long) to store binary representation of 
-                which components were detected as noise 
-            cutoff: 
-                the signal-noise cutoff value
-
-        if the n_components was automatically set, the following keys are also
-        set in components (otherwise default to None)
-
-            svd_cutoff: 
-                the number of components originally decomposed
-            lag1_full: 
-                the lag-1 autocorrelation of the full set of components 
-                decomposed before cropping to only 25% noise components
-            svd_multiplier: 
-                the svd multiplier value used to determine cutoff
+        components: A PyseasRecord dataclass/dictionary containing all the 
+        results, metadata, and information regarding the filter applied.
     '''
     print('\nCalculating Eigenspace\n-----------------------')
-    config = Config
     input = Input
-
+    config = Config
+    
     # ========================== Preprocessing ========================== #
 
     mean = np.mean(input.vector, 0).flatten()
@@ -581,22 +628,27 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
     
     # ========================== Projection ========================== #
 
-    # TODO: Add cases
+    # TODO: Add cases for new projectors
     match config.projector:
-        case 'FastICA':
+        case 'fastica':
             calculator = _FastICA(n_components = config.n_components, 
                                   max_iter = config.max_iter)
-        case 'PicardICA':
+        case 'picard':
             calculator = _PicardICA(n_components = config.n_components,
                                     max_iter = config.max_iter)
-        case 'PCA':
+        case 'pca':
             calculator = _PCA()
 
     t0 = timer()
-    n_components, eig_vec, eig_mix, noise, cutoff, svd_cutoff, increased_cutoff \
+    n_components, eig_vec, eig_mix, noise, cutoff, increased_cutoff \
         = calculator.project(vector)
     t = timer() - t0
     print('Independent Component Analysis took: {0} sec'.format(t))
+
+    if config.n_components is None:
+        svd_cutoff = n_components
+    else:
+        svd_cutoff = None
 
     # HUHHHHH????
     print('components shape:', eig_vec.shape)
@@ -608,21 +660,23 @@ def project(Input: PyseasInput, Config: PyseasConfig) -> PyseasRecord:
 
     # ========================== Saving ========================== #  
 
-    components = PyseasRecord(mean = mean,
-                              roimask = input.roimask,
-                              shape = input.shape,
+    components = PyseasRecord(eig_vec = eig_vec,
                               eig_mix = eig_mix,
-                              timecourses = timecourses,
-                              eig_vec = eig_vec,
                               n_components = n_components,
-                              lag1 = lag1,
+                              shape = input.shape,
+                              mean = mean,
+                              roimask = input.roimask,
+                              timecourses = timecourses,
                               noise_components = noise,
+                              lag1 = lag1,
+                              lag1_full = lag1_full,
                               cutoff = cutoff,
                               svd_cutoff = svd_cutoff,
                               svd_multiplier = config.svd_multiplier,
-                              increased_cutoff = increased_cutoff,
-                              lag1_full = lag1_full)
-    components.save_creation_metadata(config.projector, n_components, t)
+                              increased_cutoff = increased_cutoff)
+    components.save_creation_metadata(config.projector, 
+                                      config.estimator, 
+                                      n_components, t)
 
     # ========================== Postprocessing ========================== #
 
@@ -1491,7 +1545,9 @@ def filter_components(eig_mix: np.ndarray,
     timecourses = eig_mix.T
     lpf_timecourses = np.zeros_like(timecourses)
     for index in range(timecourses.shape[0]):
-        lpf_timecourses[index] = butterworth(timecourses[index], fps=fps, high=high_cutoff)
+        lpf_timecourses[index] = butterworth(timecourses[index], 
+                                             fps = fps, 
+                                             high = high_cutoff)
     lpf_eig_mix = lpf_timecourses.T
 
     return lpf_eig_mix
