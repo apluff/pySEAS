@@ -426,7 +426,7 @@ class PyseasConfig:
         if self.n_components is None:
             assert self.svd_multiplier is not None, \
                 'n_components is unset, so SVD multiplier must be specified.'
-            assert self.estimator is not 'none', \
+            assert self.estimator != 'none', \
                 'n_components is unset, so estimator must be set to "svd" or' \
                     ' "randomized_svd".'
         else:
