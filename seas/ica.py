@@ -24,7 +24,7 @@ from typing import Dict
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
 import zarr
-from picard import Picard
+from picard import Picard, picard
 from sklearn.utils.extmath import randomized_svd
 
 @dataclass
@@ -275,22 +275,34 @@ class _PicardICA(Projector):
         while True:
             print('\nCalculating ICA with', n_components, 'components...')
 
-            ica = Picard(n_components = n_components,
-                         max_iter = 500, # Default for testing
-                         random_state = 1000,
-                         w_init = w_init)
+            # ica = Picard(n_components = n_components,
+            #              max_iter = 500, # Default for testing
+            #              random_state = 1000,
+            #              w_init = w_init)
 
-            try:
-                eig_vec = ica.fit_transform(vector)  # Eigenbrains
-            except ValueError:
-                print('Calculation exceeded float32 maximum.')
-                print('Trying again with float64 vector...')
-                # Value error if any value exceeds float32 maximum.
-                # Overcome this by converting to float64.
-                eig_vec = ica.fit_transform(vector.astype('float64'))
-            print("n_iter:" , ica.n_iter_)
-            
-            eig_mix = ica.mixing_
+            # try:
+            #     eig_vec = ica.fit_transform(vector)  # Eigenbrains
+            # except ValueError:
+            #     print('Calculation exceeded float32 maximum.')
+            #     print('Trying again with float64 vector...')
+            #     # Value error if any value exceeds float32 maximum.
+            #     # Overcome this by converting to float64.
+            #     eig_vec = ica.fit_transform(vector.astype('float64'))
+            # print("n_iter:" , ica.n_iter_)
+            # eig_mix = ica.mixing_
+
+            K, W, Y, n_iter = picard(vector,
+                                             n_components = n_components,
+                                             max_iter = self.max_iter,
+                                             w_init = w_init,
+                                             random_state = 1000,
+                                             return_n_iter = True)
+            eig_vec = Y
+            w = np.dot(W, K)
+            A = np.dot(w.T, np.linalg.inv(np.dot(w, w.T)))
+            eig_mix = A
+            print("n_iter:" , n_iter)
+
             noise, cutoff = sort_noise(eig_mix.T)
 
             #Signal/noise check #1
