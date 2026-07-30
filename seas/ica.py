@@ -2,7 +2,7 @@ import os
 import re
 import numpy as np
 from datetime import datetime
-from sklearn.decomposition import FastICA
+from sklearn.decomposition import FastICA, NMF
 from scipy import linalg
 from timeit import default_timer as timer
 from typing import Tuple
@@ -26,6 +26,7 @@ from collections.abc import MutableMapping
 import zarr
 from picard import Picard, picard
 from sklearn.utils.extmath import randomized_svd
+from amica import AMICA
 
 
 @dataclass
@@ -55,15 +56,27 @@ class Config:
     estimator: str = 'svd'
 
     def __post_init__(self):
-        valid_projectors = ['fastica', 'picard', 'svd', 'picard-orth', 'NMF']
-        valid_estimators = [None, 'svd', 'randomized_svd']
-        
+        valid_projectors = [
+            'fastica', 
+            'picard', 
+            'picard-orth', 
+            'amica', 
+            'nmf', 
+            'svd',
+            ]
+        valid_estimators = [
+            None, 
+            'svd', 
+            'randomized_svd',
+            ]
+
+        # Validate config
         assert self.projector in valid_projectors, \
             'Specified projector is not valid, must be "fastica", "picard",' \
             ' "svd", "picard-orth", or "NMF".'
         assert self.estimator in valid_estimators, \
-            'Specified estimator is not valid, must be "svd" or' \
-            ' "randomized_svd".'
+            'Specified estimator is not valid, must be "svd",' \
+            ' "randomized_svd", or None.'
         
         if self.projector != 'svd' and self.n_components is None:
             assert self.svd_multiplier is not None, \
@@ -175,7 +188,7 @@ class Components(MutableMapping):
     noise_components: np.ndarray
     cutoff: float
     svd_cutoff: int
-    svd_multiplier: int
+    svd_multiplier: float
     increased_cutoff: int
     flipped: np.ndarray = None
     project_meta: dict = field(default_factory=dict)
@@ -218,15 +231,18 @@ class Components(MutableMapping):
                 "Eigenvector size isn't compatible with the shape of the output "
                 'matrix')
         else:
-            self.maskind = np.where(self.roimask.flat == 1)
-            assert self.eig_vec[:,0].size == self.maskind[0].size, \
+            maskind = np.where(self.roimask.flat == 1)
+            print(f"maskind is: {maskind}")
+            print(f"self.eig_vec[:,0].size = {self.eig_vec[:,0].size}")
+            print(f"self.maskind[0].size = {maskind[0].size}")
+            assert self.eig_vec[:,0].size == maskind[0].size, \
             "Eigenvector size is not compatible with the masked region's size"
 
     def save_creation_metadata(self,
-                               projection: str,
+                               projector: str,
                                estimator: str,
                                n_components: int,
-                               time_elapsed: float):
+                               time_elapsed: float) -> None:
         # Save filter metadata information about how and when movie was filtered in dictionary.
         project_meta = {}
         project_meta['time_elapsed'] = time_elapsed
@@ -236,7 +252,7 @@ class Components(MutableMapping):
         project_meta['tstmp'] = \
             datetime.now().strftime(fmt)
         project_meta['n_components'] = n_components
-        project_meta['projection'] = projection
+        project_meta['projector'] = projector
         project_meta['estimator'] = estimator
         self.project_meta = project_meta
 
@@ -257,7 +273,7 @@ class Components(MutableMapping):
         self.lag1 = self.lag1[ev_sort][::-1]
         self.lag1_full = self.lag1_full[ev_sort][::-1]
 
-    def flip_components(self) -> None:
+    def unflip_components(self) -> None:
         # Track component orientation and ensure positive spatial patterns
         eig_vec = np.zeros_like(self.eig_vec)
         eig_mix = np.zeros_like(self.eig_mix)
@@ -305,15 +321,45 @@ class Projection:
     n_components: int
     eig_vec: np.ndarray
     eig_mix: np.ndarray
+    lag1_full: np.ndarray
     noise: np.ndarray
     cutoff: float
     increased_cutoff: int
 
+    def __post_init__(self) -> None:
+        print('components shape:', self.eig_vec.shape)
+        assert self.n_components == self.eig_vec.shape[1], \
+            'n_components does not match the size of eig_vec, check outputs.'
+
+
+def validate_projection(projection: Projection) -> Tuple[bool, int ,int]:
+    n_components = projection.n_components
+    noise = projection.noise
+    frames = projection.eig_mix.shape[1]
+
+    assert noise.size == n_components, \
+        "Noise length doesn't match n_components, something is wrong."
+
+    # Test signal vs noise to determine if underdecomposed
+    underdecomposed = check_noise(noise, frames)
+
+    # Increase components for next loop if necessary
+    if underdecomposed:
+        n_components += n_components // 2
+        if n_components > frames:
+            print('\nComponents maxed out!')
+            print('\tAttempted:', n_components)
+            n_components = frames
+            print('\tReduced to:', frames)
+        increased_cutoff += 1
+
+    return (underdecomposed, n_components, increased_cutoff)
+    
 
 class Projector(ABC):
 
     @abstractmethod
-    def project(self, vector):
+    def project(self, vector) -> Projection:
         pass
 
 
@@ -321,7 +367,7 @@ class _FastICA(Projector):
 
     def __init__(self, 
                  n_components: int = None, 
-                 svd_multiplier: int = None, 
+                 svd_multiplier: float = 5, 
                  max_iter: int = 1000) -> None:
         self.n_components = n_components
         self.svd_multiplier = svd_multiplier
@@ -335,7 +381,8 @@ class _FastICA(Projector):
         # Estimate n_components if necessary
         if self.n_components is None:
             n_components, w_init = estimate_n_components(vector, 
-                                                         self.svd_multiplier)
+                                                         self.svd_multiplier,
+                                                         )
         else:
             n_components = self.n_components
             w_init = None
@@ -349,7 +396,8 @@ class _FastICA(Projector):
             ica = FastICA(n_components = n_components,
                         max_iter = self.max_iter,
                         random_state = 1000,
-                        w_init = w_init)
+                        w_init = w_init,
+                        )
             try:
                 eig_vec = ica.fit_transform(vector)  # Eigenbrains
             except ValueError:
@@ -362,130 +410,40 @@ class _FastICA(Projector):
             eig_mix = ica.mixing_
 
             # Calculate noise
-            noise, cutoff = sort_noise(eig_mix.T)
-            assert noise.size == n_components, \
-                "Noise length doesn't match n_components, something is wrong."
+            timecourses = eig_mix.T
+            lag1 = lag_n_autocorr(timecourses, 1)
+            noise, cutoff = sort_noise(timecourses, lag1)
 
-            # Test signal vs noise to determine if underdecomposed
-            if self.n_components is not None:
-                frames = vector.shape[1]
-                underdecomposed = check_noise(noise, frames)
+            projection = Projection(
+                n_components=n_components,
+                eig_vec=eig_vec,
+                eig_mix=eig_mix,
+                lag1_full=lag1,
+                noise=noise,
+                cutoff=cutoff,
+                increased_cutoff=increased_cutoff,
+                )
+
+            if self.n_components is None:
+                underdecomposed, n_components, increased_cutoff = \
+                    validate_projection(projection)
             else:
-                underdecomposed = False #BLEH
-
-            # Increase components for next loop if necessary
-            if underdecomposed:
-                n_components += n_components // 2
-                if n_components > frames:
-                    print('\nComponents maxed out!')
-                    print('\tAttempted:', n_components)
-                    n_components = frames
-                    print('\tReduced to:', frames)
-                increased_cutoff += 1
-
-        return Projection(
-            n_components=n_components,
-            eig_vec=eig_vec,
-            eig_mix=eig_mix,
-            noise=noise,
-            cutoff=cutoff,
-            increased_cutoff=increased_cutoff
-        )
-
-
-# class _FastICA(Projector):
-
-#     def __init__(self, 
-#                  n_components = None, 
-#                  svd_multiplier = None, 
-#                  max_iter = 1000):
-#         self.n_components = n_components
-#         self.svd_multiplier = svd_multiplier
-#         self.max_iter = max_iter
-
-#     def project(self, vector: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int]:
-#         '''
-#         Replicates original FastICA processing in conjunction with the
-#         top-level function project() (original wrapper) per Weiser et al. 2023.
-#         '''
-#         # ========================= START ICA BLOCK ======================== #
-#         increased_cutoff = 0
-#         if self.n_components is None:
-#             u, n_components = estimate_n_components(vector, 
-#                                                     self.svd_multiplier)
-#             w_init = u[:n_components, :n_components].astype('float64')
-#         else:
-#             n_components = self.n_components
-#             w_init = None
-            
-#         while True:
-#             print('\nCalculating ICA with', n_components, 'components...')
-
-#             ica = FastICA(n_components = n_components,
-#                         max_iter = self.max_iter,
-#                         random_state = 1000,
-#                         w_init = w_init)
-
-#             try:
-#                 eig_vec = ica.fit_transform(vector)  # Eigenbrains
-#             except ValueError:
-#                 print('Calculation exceeded float32 maximum.')
-#                 print('Trying again with float64 vector...')
-#                 # Value error if any value exceeds float32 maximum.
-#                 # Overcome this by converting to float64.
-#                 eig_vec = ica.fit_transform(vector.astype('float64'))
-#             print("n_iter:" , ica.n_iter_)
-            
-#             eig_mix = ica.mixing_
-#             noise, cutoff = sort_noise(eig_mix.T)
-
-#             #Signal/noise check #1
-#             p_signal = (1 - noise.sum() / noise.size) * 100
-#             if self.n_components is not None: # No dynamic threshold required
-#                 break
-#             elif noise.size == input.shape[0]:  # All components are being used.
-#                 break
-#             elif p_signal < 75:
-#                 print('ICA components were under 75% signal ({0}% signal).'\
-#                     .format(p_signal))
-#                 break
-#             elif n_components >= input.shape[0]:
-#                 print('ICA components were under 75% signal ({0}% signal).'\
-#                     .format(p_signal))
-#                 print('However, number of components is maxed out.')
-#                 print('Using this decomposition...')
-#                 break
-#             else:
-#                 print('ICA components were over 75% signal ({0}% signal).'\
-#                     .format(p_signal))
-#                 print('Recalculating with more components...')
-#                 n_components += n_components // 2
-#                 increased_cutoff += 1
-
-#                 if n_components > input.shape[0]:
-#                     print('\nComponents maxed out!')
-#                     print('\tAttempted:', n_components)
-#                     n_components = input.shape[0]
-#                     print('\tReduced to:', input.shape[0])
-
-#         # ========================= FINISH ICA BLOCK ======================== #
-
-#         return n_components, eig_vec, eig_mix, noise, cutoff, increased_cutoff
-
-
-class _NMF(Projector):
-    pass
+                underdecomposed = False
+        
+        return projection
 
 
 class _PicardICA(Projector):
 
     def __init__(self, 
-                 n_components = None, 
-                 svd_multiplier = None, 
-                 max_iter = 1000):
+                 n_components: int = None, 
+                 svd_multiplier: float = 5, 
+                 max_iter: int = 1000,
+                 ortho: bool = False) -> None:
         self.n_components = n_components
         self.svd_multiplier = svd_multiplier
         self.max_iter = max_iter
+        self.ortho = ortho
 
     def project(self, vector: np.ndarray) -> Projection:
         '''
@@ -496,7 +454,8 @@ class _PicardICA(Projector):
         # Estimate n_components if necessary
         if self.n_components is None:
             u, n_components = estimate_n_components(vector, 
-                                                    self.svd_multiplier)
+                                                    self.svd_multiplier,
+                                                    )
             w_init = u[:n_components, :n_components].astype('float64')
         else:
             n_components = self.n_components
@@ -508,76 +467,210 @@ class _PicardICA(Projector):
             # Calcualte ICA
             print('\nCalculating ICA with', n_components, 'components...')
 
-            # ica = Picard(n_components = n_components,
-            #              max_iter = 500, # Default for testing
-            #              random_state = 1000,
-            #              w_init = w_init)
+            ica = Picard(n_components=n_components,
+                         max_iter=self.max_iter,
+                         random_state=1000,
+                         w_init=w_init,
+                         ortho=self.ortho,
+                         )
 
-            # try:
-            #     eig_vec = ica.fit_transform(vector)  # Eigenbrains
-            # except ValueError:
-            #     print('Calculation exceeded float32 maximum.')
-            #     print('Trying again with float64 vector...')
-            #     # Value error if any value exceeds float32 maximum.
-            #     # Overcome this by converting to float64.
-            #     eig_vec = ica.fit_transform(vector.astype('float64'))
-            # print("n_iter:" , ica.n_iter_)
-            # eig_mix = ica.mixing_
+            try:
+                eig_vec = ica.fit_transform(vector)  # Eigenbrains
+            except ValueError:
+                print('Calculation exceeded float32 maximum.')
+                print('Trying again with float64 vector...')
+                # Value error if any value exceeds float32 maximum.
+                # Overcome this by converting to float64.
+                eig_vec = ica.fit_transform(vector.astype('float64'))
+            # print("n_iter:" , ica.n_iter_) # NOT PROVIDED FOR Picard
+            eig_mix = ica.mixing_
 
-            K, W, Y, n_iter = picard(vector,
-                                             n_components = n_components,
-                                             max_iter = self.max_iter,
-                                             w_init = w_init,
-                                             random_state = 1000,
-                                             return_n_iter = True)
-            eig_vec = Y
-            w = np.dot(W, K)
-            A = np.dot(w.T, np.linalg.inv(np.dot(w, w.T)))
-            eig_mix = A
-            print("n_iter:" , n_iter)
+            # The arrangement of outputs for this is weird. Check in detail
+            # if you need to use this implementation rather than sklearn
+            # interface above.
+            # K, W, Y, n_iter = picard(vector,
+            #                          n_components=n_components,
+            #                          max_iter=self.max_iter,
+            #                          w_init=w_init,
+            #                          random_state=1000,
+            #                          ortho=self.ortho,
+            #                          return_n_iter=True)
+            # eig_vec = Y # Y.T???
+            # w = np.dot(W, K)
+            # A = np.dot(w.T, np.linalg.inv(np.dot(w, w.T)))
+            # eig_mix = A
+            # print("n_iter:" , n_iter)
+            # REMINDER: Returns eig_vec.shape = (n_components, frames), and 
+            # eig_mix.shape = (n_components, masked_pixels)
 
             # Calculate noise
-            noise, cutoff = sort_noise(eig_mix.T)
-            assert noise.size == n_components, \
-                "Noise length doesn't match n_components, something is wrong."
+            timecourses = eig_mix.T
+            lag1 = lag_n_autocorr(timecourses, 1)
+            noise, cutoff = sort_noise(timecourses, lag1)
 
-            # Test signal vs noise to determine if loop is necessary
-            if self.n_components is not None:
-                frames = vector.shape[1]
-                underdecomposed= check_noise(noise, frames)
+            projection = Projection(
+                n_components=n_components,
+                eig_vec=eig_vec,
+                eig_mix=eig_mix,
+                lag1_full=lag1,
+                noise=noise,
+                cutoff=cutoff,
+                increased_cutoff=increased_cutoff,
+                )
+
+            if self.n_components is None:
+                underdecomposed, n_components, increased_cutoff = \
+                    validate_projection(projection)
             else:
-                underdecomposed = False #BLEH
-
-            # Increase components for next loop if necessary
-            if underdecomposed:
-                n_components += n_components // 2
-                if n_components > frames:
-                    print('\nComponents maxed out!')
-                    print('\tAttempted:', n_components)
-                    n_components = frames
-                    print('\tReduced to:', frames)
-                increased_cutoff += 1
+                underdecomposed = False
 
         #TODO: Does this need to be calculated here?
-        # if self.n_components is None:
-        #     lag1_full = lag_n_autocorr(eig_mix.T, 1)
-        #     svd_cutoff = n_components
-        # else: # For compatability with original pySEAS dicts
-        #     lag1_full = None # Maybe change this to return all the time.
-        #     svd_cutoff = None
-
-        return Projection(
-            n_components=n_components,
-            eig_vec=eig_vec,
-            eig_mix=eig_mix,
-            noise=noise,
-            cutoff=cutoff,
-            increased_cutoff=increased_cutoff
-        )
-
+                # if self.n_components is None:
+                #     lag1_full = lag_n_autocorr(eig_mix.T, 1)
+                #     svd_cutoff = n_components
+                # else: # For compatability with original pySEAS dicts
+                #     lag1_full = None # Maybe change this to return all the time.
+                #     svd_cutoff = None
+        
+        return projection
+    
 
 class _AMICA(Projector):
-    pass
+
+    def __init__(self, 
+                     n_components: int = None, 
+                     svd_multiplier: float = 5, 
+                     max_iter: int = 1000) -> None:
+            self.n_components = n_components
+            self.svd_multiplier = svd_multiplier
+            self.max_iter = max_iter
+    
+    def project(self, vector: np.ndarray) -> Projection:
+        '''
+        Replicates original FastICA processing in conjunction with the
+        top-level function project() (original wrapper) per Weiser et al. 2023.
+        '''
+        # Estimate n_components if necessary
+        if self.n_components is None:
+            n_components, w_init = estimate_n_components(vector, 
+                                                         self.svd_multiplier,
+                                                         )
+        else:
+            n_components = self.n_components
+            w_init = None
+
+        underdecomposed = True # To init loop
+        increased_cutoff = 0
+        while underdecomposed:
+
+            # Calculate ICA
+            print('\nCalculating ICA with', n_components, 'components...')
+            ica = AMICA(n_components=n_components,
+                        max_iter=self.max_iter,
+                        random_state=1000,
+                        w_init=w_init,
+                        )
+            try:
+                eig_vec = ica.fit_transform(vector)  # Eigenbrains
+            except ValueError:
+                print('Calculation exceeded float32 maximum.')
+                print('Trying again with float64 vector...')
+                # Value error if any value exceeds float32 maximum.
+                # Overcome this by converting to float64.
+                eig_vec = ica.fit_transform(vector.astype('float64'))
+            print("n_iter:" , ica.n_iter_)
+            eig_mix = ica.mixing_
+
+            # Calculate noise
+            timecourses = eig_mix.T
+            lag1 = lag_n_autocorr(timecourses, 1)
+            noise, cutoff = sort_noise(timecourses, lag1)
+
+            projection = Projection(
+                n_components=n_components,
+                eig_vec=eig_vec,
+                eig_mix=eig_mix,
+                lag1_full=lag1,
+                noise=noise,
+                cutoff=cutoff,
+                increased_cutoff=increased_cutoff,
+            )
+
+            if self.n_components is None:
+                underdecomposed, n_components, increased_cutoff = \
+                    validate_projection(projection)
+            else:
+                underdecomposed = False
+
+
+class _NMF(Projector):
+
+    def __init__(self, 
+                 n_components: int = None, 
+                 svd_multiplier: float = 5, 
+                 max_iter: int = 1000) -> None:
+        self.n_components = n_components
+        self.svd_multiplier = svd_multiplier
+        self.max_iter = max_iter
+
+    def project(self, vector: np.ndarray) -> Projection:
+        '''
+        Replicates original FastICA processing in conjunction with the
+        top-level function project() (original wrapper) per Weiser et al. 2023.
+        '''
+        # Estimate n_components if necessary
+        if self.n_components is None:
+            n_components, _ = estimate_n_components(vector, 
+                                                    self.svd_multiplier,
+                                                    )
+        else:
+            n_components = self.n_components
+
+        # Clear negative values for NMF (TODO: validation???)
+        vector[vector < 0] = 1e-8
+
+        underdecomposed = True # To init loop
+        increased_cutoff = 0
+        while underdecomposed:
+
+            # Calculate decomposition
+            print('\nCalculating NMF with', n_components, 'components...')
+            nmf = NMF(n_components=n_components,
+                      max_iter=self.max_iter,
+                      random_state=1000)
+            try:
+                eig_vec = nmf.fit_transform(vector)  # Eigenbrains
+            except ValueError:
+                print('Calculation exceeded float32 maximum.')
+                print('Trying again with float64 vector...')
+                # Value error if any value exceeds float32 maximum.
+                # Overcome this by converting to float64.
+                eig_vec = nmf.fit_transform(vector.astype('float64'))
+            print("n_iter:" , nmf.n_iter_)
+            eig_mix = nmf.components_.T
+
+            # Calculate noise
+            timecourses = eig_mix.T
+            lag1 = lag_n_autocorr(timecourses, 1)
+            noise, cutoff = sort_noise(timecourses, lag1)
+
+            projection = Projection(
+                n_components=n_components,
+                eig_vec=eig_vec,
+                eig_mix=eig_mix,
+                lag1_full=lag1,
+                noise=noise,
+                cutoff=cutoff,
+                increased_cutoff=increased_cutoff,
+            )
+
+            if self.n_components is None:
+                underdecomposed, n_components, increased_cutoff = \
+                    validate_projection(projection)
+            else:
+                underdecomposed = False
+        
+        return projection
 
 
 class _SVD(Projector):
@@ -666,7 +759,7 @@ def calculate_residuals(input: Input, components: Components) -> dict:
     return output
 
 
-def flip_components(components: Components) -> dict:
+def unflip_components(components: Components) -> dict:
     # Track component orientation and ensure positive spatial patterns
     n_components = components.n_components
     eig_vec = np.zeros_like(components.eig_vec)
@@ -793,25 +886,30 @@ def project(input: Input, config: Config) -> Components:
     # TODO: Add cases for new projectors
     match config.projector:
         case 'fastica':
-            calculator = _FastICA(n_components=config.n_components, 
+            calculator = _FastICA(n_components=config.n_components,
+                                  svd_multiplier=config.svd_multiplier, 
                                   max_iter=config.max_iter)
         case 'picard':
             calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
                                     max_iter=config.max_iter)
+        case 'picard-orth':
+            calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
+                                    max_iter=config.max_iter,
+                                    ortho=True)
+        case 'amica':
+            calculator = _AMICA(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter)
+        case 'nmf':
+            calculator = _NMF(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter)
         case 'pca':
             calculator = _SVD()
-        # case 'NMF':
-        #     calculator = _NMF(n_components=config.n_components)
-        # case 'picard-orth':
-        #     calculator = _PicardICA(n_components=config.n_components,
-        #                             max_iter=config.max_iter,
-        #                             orthogonal=True)
-        # case 'amica':
-        #     calculator = _AMICA(n_components=config.n_components)
 
     t0 = timer()
-    # n_components, eig_vec, eig_mix, noise, cutoff, increased_cutoff \
-    #     = calculator.project(vector)
     projection = calculator.project(vector)
     t = timer() - t0
     print('Independent Component Analysis took: {0} sec'.format(t))
@@ -821,32 +919,16 @@ def project(input: Input, config: Config) -> Components:
     else:
         svd_cutoff = None
 
-    # HUHHHHH????
-    print('components shape:', projection.eig_vec.shape)
-    assert projection.n_components == projection.eig_vec.shape[1], #"HUUUHHHH????
-
-    timecourses = projection.eig_mix.T
-    lag1_full = lag_n_autocorr(timecourses, 1)
-    lag1 = lag1_full
-
-    #TODO: Which needs to be implemented?
-    # if self.n_components is None:
-    #     lag1_full = lag_n_autocorr(eig_mix.T, 1)
-    #     svd_cutoff = n_components
-    # else: # For compatability with original pySEAS dicts
-    #     lag1_full = None # Maybe change this to return all the time.
-    #     svd_cutoff = None
-
     components = Components(eig_vec=projection.eig_vec,
                             eig_mix=projection.eig_mix,
                             n_components=projection.n_components,
                             shape=input.shape,
                             mean=mean,
                             roimask=input.roimask,
-                            timecourses=timecourses,
+                            timecourses=projection.eig_mix.T,
                             noise_components=projection.noise,
-                            lag1=lag1,
-                            lag1_full=lag1_full,
+                            lag1=projection.lag1_full,
+                            lag1_full=projection.lag1_full,
                             cutoff=projection.cutoff,
                             svd_cutoff=svd_cutoff,
                             svd_multiplier=config.svd_multiplier,
@@ -877,10 +959,10 @@ def project(input: Input, config: Config) -> Components:
     if config.crop_excess_noise:
         components.crop_excess_noise()
     else:
-            print('Noise retention enabled. Not cropping excess noise.')
+        print('Noise retention enabled. Not cropping excess noise.')
 
-    # Flip inverted components and lastly calculate residuals
-    components.flip_components()
+    # Unflip inverted components and lastly calculate residuals
+    components.unflip_components()
     if config.calc_residuals:
         try:
             residuals = calculate_residuals(input, components)
@@ -890,7 +972,7 @@ def project(input: Input, config: Config) -> Components:
             print('\t', e)
 
     # # Flip inverted components
-    # flipped_components = flip_components(components)
+    # flipped_components = unflip_components(components)
     # components.update(flipped_components)
     
     print('\n')
