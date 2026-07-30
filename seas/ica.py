@@ -224,8 +224,10 @@ def project(vector: np.ndarray,
         print('Calculating ICA (' + str(n_components) + ' components)...')
 
         t0 = timer()
+        #whitener = "eigh"
+        #print(f"whiten_solver set to {whitener}")
+        #ica = FastICA(n_components=n_components, max_iter=max_iter, random_state=1000, whiten_solver=whitener)
         ica = FastICA(n_components=n_components, max_iter=max_iter, random_state=1000)
-
         try:
             eig_vec = ica.fit_transform(vector)  # Eigenbrains
         except ValueError:
@@ -948,6 +950,7 @@ def approximate_svd_linearity_transition(eig_val: np.ndarray):
             The estimate of the SVD noise floor cutoff.
     '''
     eig_val -= eig_val.min()
+    print(f"eig_val.sum() is: {eig_val.sum()}")
     eig_val = eig_val / eig_val.sum()
     eig_val_integrated = np.cumsum(eig_val)
     x = np.arange(eig_val.size)
