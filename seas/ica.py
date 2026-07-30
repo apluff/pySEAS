@@ -48,13 +48,13 @@ class Config:
             Where n_components is unset, which estimator to use to
             input a reduced n_components for ICA projections.
     '''
-    n_components: int = None
+    n_components: int | None = None
     crop_excess_noise: bool = True
-    svd_multiplier: float = 5
+    svd_multiplier: float | None = 5
     calc_residuals: bool = False
-    max_iter: int = None
+    max_iter: int = 1000
     projector: str = 'fastica'
-    estimator: str = 'svd'
+    estimator: str | None = 'svd'
 
     def __post_init__(self):
         valid_projectors = [
@@ -75,7 +75,7 @@ class Config:
         # Validate config
         assert self.projector in valid_projectors, \
             'Specified projector is not valid, must be "fastica", "picard",' \
-            ' "svd", "picard-orth", or "NMF".'
+            ' "svd", "picard-orth", "amica", or "nmf".'
         assert self.estimator in valid_estimators, \
             'Specified estimator is not valid, must be "svd",' \
             ' "cusvd", "randomized_svd", or None.'
@@ -86,7 +86,7 @@ class Config:
                 'so SVD multiplier must be specified.'
             assert self.estimator is not None, \
                 'n_components is unset with an ICA projector, ' \
-                'so estimator must be set to "svd" or "randomized_svd".'
+                'so estimator must be set to "svd", "cusvd", or "randomized_svd".'
         else:
             'n_components has been specified, ' \
             'clearing svd_multiplier and estimator.'            
@@ -189,9 +189,9 @@ class Components(MutableMapping):
     lag1_full: np.ndarray
     noise_components: np.ndarray
     cutoff: float
-    svd_cutoff: int
-    svd_multiplier: float
-    increased_cutoff: int
+    svd_cutoff: int | None
+    svd_multiplier: float | None
+    increased_cutoff: int | None
     flipped: np.ndarray = None
     project_meta: dict = field(default_factory=dict)
     _extra: dict = field(default_factory=dict)
@@ -242,7 +242,7 @@ class Components(MutableMapping):
 
     def save_creation_metadata(self,
                                projector: str,
-                               estimator: str,
+                               estimator: str | None,
                                n_components: int,
                                time_elapsed: float) -> None:
         # Save filter metadata information about how and when movie was filtered in dictionary.
@@ -463,6 +463,7 @@ def project(input: Input, config: Config) -> Components:
     # ========================== Preprocessing ========================== #
 
     mean = np.mean(input.vector, 0).flatten()
+    vector = input.vector - mean
     
     # ========================== Projection ========================== #
 
@@ -471,32 +472,32 @@ def project(input: Input, config: Config) -> Components:
         case 'fastica':
             calculator = _FastICA(n_components=config.n_components,
                                   svd_multiplier=config.svd_multiplier, 
-                                  max_iter=config.max_iter)
-            vector = input.vector - mean
+                                  max_iter=config.max_iter,
+                                  estimator=config.estimator)
         case 'picard':
             calculator = _PicardICA(n_components=config.n_components,
                                     svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter)
-            vector = input.vector - mean
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator)
         case 'picard-orth':
             calculator = _PicardICA(n_components=config.n_components,
                                     svd_multiplier=config.svd_multiplier,
                                     max_iter=config.max_iter,
+                                    estimator=config.estimator,
                                     ortho=True)
-            vector = input.vector - mean
         case 'amica':
             calculator = _AMICA(n_components=config.n_components,
                                 svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter)
-            vector = input.vector - mean
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
         case 'nmf':
             calculator = _NMF(n_components=config.n_components,
                               svd_multiplier=config.svd_multiplier,
-                              max_iter=config.max_iter)
+                              max_iter=config.max_iter,
+                              estimator=config.estimator)
             vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
         case 'pca':
             calculator = _SVD()
-            vector = input.vector - mean
 
     t0 = timer()
     projection = calculator.project(vector)
@@ -564,7 +565,139 @@ def project(input: Input, config: Config) -> Components:
     # flipped_components = unflip_components(components)
     # components.update(flipped_components)
     
+    # print('\n')
+    return components
+
+
+def projectWIP(input: Input, config: Config) -> Components:
+    '''
+    Apply a decomposition to the first axis of the input vector.  
+    If a roimask was provided, the flattened roimask will be used to crop the 
+    vector before decomposition.
+
+    If n_components is not set, an adaptive svd threshold is used 
+    (see approximate_svd_linearity_transition), with the hyperparameter 
+    svd_mutliplier.  
+
+    Residuals lost in the projection are captured if calc_residuals == True.  
+    This represents the signal lost by ICA compression.
+    
+    Arguments:
+        input: 
+            an Input object containing the video to be projected and 
+            associated data.
+        config:
+            a Config object containing config for the projection process.
+        
+    Returns:
+        components: A Components dataclass/dictionary containing all the 
+        results, metadata, and information regarding the filter applied.
+    '''
+
+    print('\nCalculating Eigenspace\n-----------------------')
+
+    # ========================== Preprocessing ========================== #
+    
+    mean = np.mean(input.vector, 0).flatten()
+    vector = input.vector - mean
+
+    # ========================== Config ========================== #
+
+    match config.projector:
+        case 'fastica':
+            calculator = _FastICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier, 
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator)
+        case 'picard':
+            calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator)
+        case 'picard-orth':
+            calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator,
+                                    ortho=True)
+        case 'amica':
+            calculator = _AMICA(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
+        case 'nmf':
+            calculator = _NMF(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
+            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
+        case 'pca':
+            calculator = _cuSVD()
+            PCA = True
+
+    match config.estimator:
+        case 'svd':
+            estimator = _SVD()
+        case 'cusvd':
+            estimator = _cuSVD()
+    
+    # ========================== Projection ========================== #
+
+    t0 = timer()
+    if config.n_components is None and PCA is not True:
+        n_components, w_init = estimator.estimate_n_components(vector)
+    while underdecomposed:
+        projection = calculator.project(n_components, w_init, vector)
+        underdecomposed, n_components, increased_cutoff = projection.validate_projection()
+    t = timer() - t0
+    ###### BUT HOW IS INCREASED_CUTOFF INCREMENTED?
+    print('Independent Component Analysis took: {0} sec'.format(t))
+
+    if config.n_components is None:
+        svd_cutoff = projection.n_components
+    else:
+        svd_cutoff = None
+
+    components = Components(eig_vec=projection.eig_vec,
+                            eig_mix=projection.eig_mix,
+                            n_components=projection.n_components,
+                            shape=input.shape,
+                            mean=mean,
+                            roimask=input.roimask,
+                            timecourses=projection.eig_mix.T,
+                            noise_components=projection.noise,
+                            lag1=projection.lag1_full,
+                            lag1_full=projection.lag1_full,
+                            cutoff=projection.cutoff,
+                            svd_cutoff=svd_cutoff,
+                            svd_multiplier=config.svd_multiplier,
+                            increased_cutoff=projection.increased_cutoff)
+    
+    components.save_creation_metadata(projector=config.projector, 
+                                      estimator=config.estimator, 
+                                      n_components=projection.n_components, 
+                                      time_elapsed=t)
+
+    # ========================== Postprocessing ========================== #
+    
+    # Sort components then crop noise
+    components.sort_components(sort_by='lag1')
+    if config.crop_excess_noise:
+        components.crop_excess_noise()
+    else:
+        print('Noise retention enabled. Not cropping excess noise.')
+
+    # Unflip inverted components and lastly calculate residuals
+    components.unflip_components()
+    if config.calc_residuals:
+        try:
+            residuals = calculate_residuals(input, components)
+            components.update(residuals)
+        except Exception as e:
+            print('Residual Calculation Failed!!')
+            print('\t', e)
     print('\n')
+
     return components
 
 
