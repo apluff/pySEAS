@@ -50,12 +50,12 @@ def save_data(components: Components, outpath: str) -> None:
 
 def main(video, max_iter, mask, outpath, test_projector) -> None:
     input = load_data(video, mask)
-    config = Config(n_components=500,
+    config = Config(n_components=None,
                     calc_residuals=False,
                     crop_excess_noise=False, 
                     max_iter=max_iter,
                     projector=test_projector,
-                    estimator='svd',
+                    estimator='cusvd',
                     )
     print(f'Running ICA test with projector: {test_projector}')
     components = run_ica(input, config)
