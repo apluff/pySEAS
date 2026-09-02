@@ -1,33 +1,64 @@
-import os
-import re
-import numpy as np
+from collections.abc import MutableMapping
+from dataclasses import dataclass, field, fields
 from datetime import datetime
-from sklearn.decomposition import FastICA, NMF
-from scipy import linalg
 from timeit import default_timer as timer
 from typing import Tuple
 
 from seas.waveletAnalysis import waveletAnalysis
 from seas.signalanalysis import butterworth, sort_noise, lag_n_autocorr
 from seas.hdf5manager import hdf5manager
-from seas.video import rotate, save, rescale, play, scale_video
-from seas.projectors import _FastICA, _PicardICA, _NMF, _SVD, _AMICA, _cuSVD, Projection
+from seas.video import rotate, save, scale_video
+from seas.projectors import (_FastICA, 
+                             _PicardICA, 
+                             _NMF, 
+                             _SVD, 
+                             Projector, 
+                            )
 
 import cv2
+import numpy as np
 from skimage.morphology import remove_small_objects
-from skimage import draw, measure
+from skimage import draw
 from scipy import ndimage
 import tifffile as tif
+import zarr 
 
-# Refactor additions
-from dataclasses import dataclass, field, fields, asdict
-from typing import Dict
-from abc import ABC, abstractmethod
-from collections.abc import MutableMapping
-import zarr
-from picard import Picard, picard
-from sklearn.utils.extmath import randomized_svd
-from amica import AMICA
+
+@dataclass
+class Input:
+    '''
+    Attributes:
+        vector: 
+            The (x*y, t) vector to be spatially ICA projected.
+        shape:
+            The shape of the original movie (t,x,y).
+        roimask:
+            The roimask to crop the vectorized movie (x,y).
+        maskind:
+            The indices of each vector frame corresponding to the mask.
+    '''
+    vector: np.ndarray
+    shape: Tuple[int, int, int]
+    roimask: np.ndarray | None = None
+    maskind: np.ndarray | None = None
+
+    def __post_init__(self):
+        assert (self.vector.ndim == 2), (
+        'vector was not a two-dimensional np array.'
+        'If input is a movie, be sure to convert shape to (xy, t)')
+
+        if self.vector.dtype == np.float16:
+            self.vector = self.vector.astype('float32', copy=False)
+            
+        if self.roimask is not None:
+            print('Roimask will be used to crop video.')
+            assert self.roimask.size == self.vector.shape[0], \
+            'Vector was not the same size as the cropped mask'
+
+            print('Original vector size:', self.vector.shape)
+            self.maskind = np.where(self.roimask.flat == 1)
+            self.vector = self.vector[self.maskind]
+            print('Original vector reduced to size:', self.vector.shape)
 
 
 @dataclass
@@ -64,23 +95,24 @@ class Config:
             'amica', 
             'nmf', 
             'svd',
+            'torchnmf',
+            'torchsvd',
             ]
         valid_estimators = [
             None, 
             'svd', 
-            'cusvd',
-            'randomized_svd',
+            'torchsvd',
             ]
 
         # Validate config
         assert self.projector in valid_projectors, \
             'Specified projector is not valid, must be "fastica", "picard",' \
-            ' "svd", "picard-orth", "amica", or "nmf".'
+            ' "picard-orth", "amica", "nmf", "svd", "torchnmf", or "torchsvd".'
         assert self.estimator in valid_estimators, \
             'Specified estimator is not valid, must be "svd",' \
-            ' "cusvd", "randomized_svd", or None.'
+            ' "torchsvd", or None.'
         
-        if self.projector != 'svd' and self.n_components is None:
+        if "svd" not in self.projector and self.n_components is None:
             assert self.svd_multiplier is not None, \
                 'n_components is unset for an ICA projector, ' \
                 'so SVD multiplier must be specified.'
@@ -95,40 +127,20 @@ class Config:
 
 
 @dataclass
-class Input:
-    '''
-    Attributes:
-        vector: 
-            The (x*y, t) vector to be spatially ICA projected.
-        shape:
-            The shape of the original movie (t,x,y).
-        roimask:
-            The roimask to crop the vectorized movie (x,y).
-        maskind:
-            The indices of each vector frame corresponding to the mask.
-    '''
-    vector: np.ndarray
-    shape: Tuple[int, int, int]
-    roimask: np.ndarray = None
-    maskind: np.ndarray = None
+class Projection:
+    n_components: int
+    eig_vec: np.ndarray
+    eig_mix: np.ndarray
+    lag1_full: np.ndarray
+    noise: np.ndarray
+    cutoff: float | None
+    increased_cutoff: int
+    svd_cutoff: int | None
 
-    def __post_init__(self):
-        assert (self.vector.ndim == 2), (
-        'vector was not a two-dimensional np array.'
-        'If input is a movie, be sure to convert shape to (xy, t)')
-
-        if self.vector.dtype == np.float16:
-            self.vector = self.vector.astype('float32', copy=False)
-            
-        if self.roimask is not None:
-            print('Roimask will be used to crop video.')
-            assert self.roimask.size == self.vector.shape[0], \
-            'Vector was not the same size as the cropped mask'
-
-            print('Original vector size:', self.vector.shape)
-            self.maskind = np.where(self.roimask.flat == 1)
-            self.vector = self.vector[self.maskind]
-            print('Original vector reduced to size:', self.vector.shape)
+    def __post_init__(self) -> None:
+        print('components shape:', self.eig_vec.shape)
+        assert self.n_components == self.eig_vec.shape[1], \
+            'n_components does not match the size of eig_vec, check outputs.'
 
 
 @dataclass
@@ -192,7 +204,7 @@ class Components(MutableMapping):
     svd_cutoff: int | None
     svd_multiplier: float | None
     increased_cutoff: int | None
-    flipped: np.ndarray = None
+    flipped: np.ndarray | None = None
     project_meta: dict = field(default_factory=dict)
     _extra: dict = field(default_factory=dict)
 
@@ -318,121 +330,6 @@ class Components(MutableMapping):
             print('Less than 75% signal.  Not cropping excess noise.')
 
 
-def calculate_residuals(input: Input, components: Components) -> dict:
-    vector = input.vector.astype('float64')
-    rebuilt = rebuild(components,
-                      artifact_components='none',
-                      apply_mean_filter=False).T
-    rebuilt -= rebuilt.mean(axis=0)
-    vector -= vector.mean(axis=0)
-    residuals = np.abs(vector - rebuilt)
-    residuals_temporal = residuals.mean(axis=0)
-
-    if input.roimask is not None:
-        residuals_spatial = np.zeros(input.roimask.shape)
-        residuals_spatial.flat[input.maskind] = residuals.mean(axis=1)
-    else:
-        residuals_spatial = np.reshape(residuals.mean(axis=1),
-                                       (shape[1], shape[2]))
-        
-    output = {}
-    output['residuals_spatial'] = residuals_spatial
-    output['residuals_temporal'] = residuals_temporal
-
-    return output
-
-
-def unflip_components(components: Components) -> dict:
-    # Track component orientation and ensure positive spatial patterns
-    n_components = components.n_components
-    eig_vec = np.zeros_like(components.eig_vec)
-    eig_mix = np.zeros_like(components.eig_mix)
-    flipped = np.ones(n_components)
-    
-    for i in range(n_components):
-        # Find the index of maximum absolute value
-        max_idx = np.argmax(np.abs(components.eig_vec[:, i]))
-        # If that maximum value is negative, flip the component
-        if components.eig_vec[max_idx, i] < 0:
-            eig_vec[:, i] = -1 * components.eig_vec[:, i]
-            eig_mix[:, i] = -1 * components.eig_mix[:, i]
-            flipped[i] = -1
-
-        output = {}
-        output['eig_vec'] = eig_vec
-        output['eig_mix'] = eig_mix
-        output['flipped'] = flipped
-
-        return output
-
-
-def crop_excess_noise(components: Components) -> dict:
-    n_components = components.n_components
-    eig_vec = components.eig_vec
-    eig_mix = components.eig_mix
-    noise = components.noise_components
-    
-    print('Cropping excess noise components')
-    reduced_n_components = int((noise.size - noise.sum()) * 1.25)
-    print('reduced_n_components:', reduced_n_components)
-    if reduced_n_components < n_components:
-        print('Cropping', n_components, 'to', reduced_n_components)
-
-        eig_vec = eig_vec[:, :reduced_n_components]
-        eig_mix = eig_mix[:, :reduced_n_components]
-        n_components = reduced_n_components
-        noise_components = noise[:reduced_n_components]
-        
-        # Recalculate lag1 for reduced components
-        timecourses = eig_mix.T
-        lag1 = lag_n_autocorr(timecourses, 1)
-
-        output = {}
-        output['eig_vec'] = eig_vec
-        output['eig_mix'] = eig_mix
-        output['n_components'] = n_components
-        output['noise_components'] = noise_components
-        output['lag1'] = lag1
-
-        return output
-    else:
-        print('Less than 75% signal.  Not cropping excess noise.')
-
-
-def sort_components(components: Components = None,
-                    sort_by: str = 'timecourse_std') -> dict:
-    '''
-    Sorts components by some metric before cropping excess noise.
-    '''
-    assert components is not None, 'Components must be provided for sort.'
-    eig_mix = components.eig_mix
-    eig_vec = components.eig_vec
-    noise = components.noise_components
-    lag1 = components.lag1
-    lag1_full = components.lag1_full
-    match sort_by:
-        case 'timecourse_std': # Original pySEAS default.
-            # Sort components by their eig val influence (approximated by timecourse standard deviation).
-            # NOTE: This doesn't guarantee all removed components are noise.
-            ev_sort = np.argsort(eig_mix.std(axis=0))
-        case 'lag1': # Guarantees correct ordering for noise cropping
-            ev_sort = np.argsort(lag1)
-    eig_vec = eig_vec[:, ev_sort][:, ::-1]
-    eig_mix = eig_mix[:, ev_sort][:, ::-1]
-    noise_components = noise[ev_sort][::-1]
-    lag1 = [ev_sort][::-1]
-    lag1_full = lag1_full[ev_sort][::-1]
-
-    output = {}
-    output['eig_vec'] = eig_vec
-    output['eig_mix'] = eig_mix
-    output['noise_components'] = noise_components
-    output['lag1'] = lag1
-    output['lag1_full'] = lag1_full
-
-    return output
-
-
 def project(input: Input, config: Config) -> Components:
     '''
     Apply a decomposition to the first axis of the input vector.  
@@ -459,55 +356,12 @@ def project(input: Input, config: Config) -> Components:
     '''
 
     print('\nCalculating Eigenspace\n-----------------------')
-    
-    # ========================== Preprocessing ========================== #
-
-    mean = np.mean(input.vector, 0).flatten()
-    vector = input.vector - mean
-    
-    # ========================== Projection ========================== #
-
-    # TODO: Add cases for new projectors
-    match config.projector:
-        case 'fastica':
-            calculator = _FastICA(n_components=config.n_components,
-                                  svd_multiplier=config.svd_multiplier, 
-                                  max_iter=config.max_iter,
-                                  estimator=config.estimator)
-        case 'picard':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator)
-        case 'picard-orth':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator,
-                                    ortho=True)
-        case 'amica':
-            calculator = _AMICA(n_components=config.n_components,
-                                svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter,
-                                estimator=config.estimator)
-        case 'nmf':
-            calculator = _NMF(n_components=config.n_components,
-                              svd_multiplier=config.svd_multiplier,
-                              max_iter=config.max_iter,
-                              estimator=config.estimator)
-            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
-        case 'pca':
-            calculator = _SVD()
-
+    calculator = get_projector(config)
+    mean, vector = calculator.preprocess(vector)
     t0 = timer()
-    projection = calculator.project(vector)
+    projection = projection_loop(vector, calculator, config)
     t = timer() - t0
-    print('Independent Component Analysis took: {0} sec'.format(t))
-
-    if config.n_components is None:
-        svd_cutoff = projection.n_components
-    else:
-        svd_cutoff = None
+    print('Data projection took: {0} sec'.format(t))
 
     components = Components(eig_vec=projection.eig_vec,
                             eig_mix=projection.eig_mix,
@@ -528,8 +382,6 @@ def project(input: Input, config: Config) -> Components:
                                       estimator=config.estimator, 
                                       n_components=projection.n_components, 
                                       time_elapsed=t)
-
-    # ========================== Postprocessing ========================== #
 
     # Sort components by timecourse standard deviation per pyseas default
     # sorted_components = sort_components(components=components, sort_by='lag1')
@@ -569,40 +421,60 @@ def project(input: Input, config: Config) -> Components:
     return components
 
 
-def projectWIP(input: Input, config: Config) -> Components:
+def projection_loop(self,
+                    vector: np.ndarray,
+                    projector: Projector,
+                    config: Config) -> Projection:
     '''
-    Apply a decomposition to the first axis of the input vector.  
-    If a roimask was provided, the flattened roimask will be used to crop the 
-    vector before decomposition.
-
-    If n_components is not set, an adaptive svd threshold is used 
-    (see approximate_svd_linearity_transition), with the hyperparameter 
-    svd_mutliplier.  
-
-    Residuals lost in the projection are captured if calc_residuals == True.  
-    This represents the signal lost by ICA compression.
-    
-    Arguments:
-        input: 
-            an Input object containing the video to be projected and 
-            associated data.
-        config:
-            a Config object containing config for the projection process.
-        
-    Returns:
-        components: A Components dataclass/dictionary containing all the 
-        results, metadata, and information regarding the filter applied.
+    Replicates original FastICA processing in conjunction with the
+    top-level function project() (original wrapper) per Weiser et al. 2023.
     '''
+    # Estimate n_components if necessary
+    if config.estimator is not None and config.n_components is None:
+        n_components, w_init = estimate_n_components(vector, 
+                                                     config.svd_multiplier,
+                                                     config.estimator,
+                                                     )
+        svd_cutoff = n_components
+    else:
+        n_components = config.n_components
+        w_init = None
+        svd_cutoff = None
 
-    print('\nCalculating Eigenspace\n-----------------------')
+    underdecomposed = True # To init loop
+    increased_cutoff = 0
+    while underdecomposed:
+        print('\nCalculating ICA with', n_components, 'components...')
+        eig_vec, eig_mix = projector.project(vector, n_components, w_init)
 
-    # ========================== Preprocessing ========================== #
-    
-    mean = np.mean(input.vector, 0).flatten()
-    vector = input.vector - mean
+        # Calculate noise
+        timecourses = eig_mix.T
+        lag1 = lag_n_autocorr(timecourses, 1)
+        noise, cutoff = sort_noise(timecourses, lag1)
 
-    # ========================== Config ========================== #
+        projection = Projection(
+            n_components=n_components,
+            eig_vec=eig_vec,
+            eig_mix=eig_mix,
+            lag1_full=lag1,
+            noise=noise,
+            cutoff=cutoff,
+            increased_cutoff=increased_cutoff,
+            svd_cutoff=svd_cutoff,
+            )
 
+        if self.n_components is None:
+            underdecomposed, n_components, increased_cutoff = \
+                validate_projection(projection)
+        else:
+            underdecomposed = False
+
+    return projection
+
+
+def get_projector(config: Config) -> Projector:
+    # We only import from torchprojectors as necessary due to its torch and
+    # cuda runtime requirements on Bunya.
     match config.projector:
         case 'fastica':
             calculator = _FastICA(n_components=config.n_components,
@@ -621,6 +493,7 @@ def projectWIP(input: Input, config: Config) -> Components:
                                     estimator=config.estimator,
                                     ortho=True)
         case 'amica':
+            from seas.torchprojectors import _AMICA
             calculator = _AMICA(n_components=config.n_components,
                                 svd_multiplier=config.svd_multiplier,
                                 max_iter=config.max_iter,
@@ -630,79 +503,23 @@ def projectWIP(input: Input, config: Config) -> Components:
                                 svd_multiplier=config.svd_multiplier,
                                 max_iter=config.max_iter,
                                 estimator=config.estimator)
-            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
-        case 'pca':
-            calculator = _cuSVD()
-            PCA = True
-
-    match config.estimator:
+        case 'torchnmf':
+            from seas.torchprojectors import _torchNMF
+            calculator = _torchNMF(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
         case 'svd':
-            estimator = _SVD()
-        case 'cusvd':
-            estimator = _cuSVD()
-    
-    # ========================== Projection ========================== #
+            calculator = _SVD()
+        case 'torchsvd':
+            from seas.torchprojectors import _torchSVD
+            calculator = _torchSVD()
 
-    t0 = timer()
-    if config.n_components is None and PCA is not True:
-        n_components, w_init = estimator.estimate_n_components(vector)
-    while underdecomposed:
-        projection = calculator.project(n_components, w_init, vector)
-        underdecomposed, n_components, increased_cutoff = projection.validate_projection()
-    t = timer() - t0
-    ###### BUT HOW IS INCREASED_CUTOFF INCREMENTED?
-    print('Independent Component Analysis took: {0} sec'.format(t))
-
-    if config.n_components is None:
-        svd_cutoff = projection.n_components
-    else:
-        svd_cutoff = None
-
-    components = Components(eig_vec=projection.eig_vec,
-                            eig_mix=projection.eig_mix,
-                            n_components=projection.n_components,
-                            shape=input.shape,
-                            mean=mean,
-                            roimask=input.roimask,
-                            timecourses=projection.eig_mix.T,
-                            noise_components=projection.noise,
-                            lag1=projection.lag1_full,
-                            lag1_full=projection.lag1_full,
-                            cutoff=projection.cutoff,
-                            svd_cutoff=svd_cutoff,
-                            svd_multiplier=config.svd_multiplier,
-                            increased_cutoff=projection.increased_cutoff)
-    
-    components.save_creation_metadata(projector=config.projector, 
-                                      estimator=config.estimator, 
-                                      n_components=projection.n_components, 
-                                      time_elapsed=t)
-
-    # ========================== Postprocessing ========================== #
-    
-    # Sort components then crop noise
-    components.sort_components(sort_by='lag1')
-    if config.crop_excess_noise:
-        components.crop_excess_noise()
-    else:
-        print('Noise retention enabled. Not cropping excess noise.')
-
-    # Unflip inverted components and lastly calculate residuals
-    components.unflip_components()
-    if config.calc_residuals:
-        try:
-            residuals = calculate_residuals(input, components)
-            components.update(residuals)
-        except Exception as e:
-            print('Residual Calculation Failed!!')
-            print('\t', e)
-    print('\n')
-
-    return components
+    return calculator
 
 
 def rebuild(components: dict | str,
-            artifact_components: np.ndarray = None,
+            artifact_components: np.ndarray | None = None,
             t_start: int | None = None,
             t_stop: int | None = None,
             apply_mean_filter: bool = True,
@@ -816,7 +633,7 @@ def rebuild(components: dict | str,
             return data_r
 
     def derive_reconstruct_indices(components: dict, 
-                                   artifact_components: np.ndarray = None, 
+                                   artifact_components: np.ndarray | None = None, 
                                    include_noise: bool = False) -> np.ndarray:
         n_components = components['n_components']
 
@@ -836,8 +653,8 @@ def rebuild(components: dict | str,
 
     def reshape_rebuilt_video(data_r: np.ndarray, 
                               shape: Tuple[int, int, int], 
-                              roimask: np.ndarray = None, 
-                              maskind: np.ndarray = None):
+                              roimask: np.ndarray | None = None, 
+                              maskind: np.ndarray | None = None):
         if roimask is None:
             data_r = data_r.reshape(shape)
         else:
@@ -952,52 +769,232 @@ def rebuild(components: dict | str,
             data_r = _rebuild_cluster_videos(eig_vec, eig_mix, mean,
                                              cluster_indices, t_start, 
                                              t_stop, shape, roimask, maskind)
-        
-    # spatiotemporal_event_masks = data_r[data_r > 0]
-
-    # # More of my extra stuff, integration could be clearer.
-    # if apply_masked_mean:
-
-    #     # Apply mean to masks only, zeroing unmasked pixels
-    #     spatiotemporal_event_masks = np.zeros_like(data_r)
-    #     spatiotemporal_event_masks[data_r > 0] = 255
-    #     spatiotemporal_event_masks = spatiotemporal_event_masks.astype(bool)
-    #     masks = components['thresh_masks']
-    #     assert masks is not None, \
-    #     "Masks have not been assigned to dictionary"
-    #     if apply_mean_filter:
-    #         combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
-    #         mean_to_add = np.zeros_like(data_r)
-    #         mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
-    #         mean_to_add[:, combined_mask] = mean_filtered[t_start:t_stop, None]
-    #         data_r += mean_to_add
-    #         data_r[~spatiotemporal_event_masks] = 0
-
-    #     else:
-    #         print('Not filtering mean')
-    #         combined_mask = np.any(masks[:, reconstruct_indices], axis=1)
-    #         mean_to_add = np.zeros_like(data_r)
-    #         mean_filtered = None
-    #         mean_to_add[:, combined_mask] = mean[t_start:t_stop, None]
-    #         data_r += mean_to_add
-    #         data_r[~spatiotemporal_event_masks] = 0
-    # else:
-    #     # Run original readdition of mean
-    #     if apply_mean_filter:
-    #         mean_filtered = filter_mean(mean, filter_method, low_cutoff=mlow, high_cutoff=mhigh, fps=fps)
-    #         data_r += mean_filtered[t_start:t_stop, None]
-
-    #     else:
-    #         print('Not filtering mean')
-    #         mean_filtered = None
-    #         data_r += mean[t_start:t_stop, None]
-
-    # if binary_threshold:
-    #     data_binary = np.zeros(data_r)
-    #     data_binary[data_r > 0] = 255
-    #     data_r = data_binary
 
     return data_r
+
+
+def calculate_residuals(input: Input, components: Components) -> dict:
+    vector = input.vector.astype('float64')
+    rebuilt = rebuild(components,
+                      artifact_components='none',
+                      apply_mean_filter=False).T
+    rebuilt -= rebuilt.mean(axis=0)
+    vector -= vector.mean(axis=0)
+    residuals = np.abs(vector - rebuilt)
+    residuals_temporal = residuals.mean(axis=0)
+
+    if input.roimask is not None:
+        residuals_spatial = np.zeros(input.roimask.shape)
+        residuals_spatial.flat[input.maskind] = residuals.mean(axis=1)
+    else:
+        residuals_spatial = np.reshape(residuals.mean(axis=1),
+                                       (shape[1], shape[2]))
+        
+    output = {}
+    output['residuals_spatial'] = residuals_spatial
+    output['residuals_temporal'] = residuals_temporal
+
+    return output
+
+
+def estimate_n_components(vector: np.ndarray, 
+                          svd_multiplier: float = 5,
+                          estimator: str = 'cusvd') -> Tuple[int, np.ndarray]:
+    
+    match estimator:
+        case 'svd':
+            calculator = _SVD()
+            print('Estimating n_components with SVD...')
+        case 'torchsvd':
+            from torchprojectors import _torchSVD
+            calculator = _torchSVD()
+            print('Estimating n_components with cupy SVD...')
+
+    u, ev, _ = calculator.decompose(vector)
+    # cupy_vector = cupy.asarray(vector)
+    # u, ev, _ = calculator.decompose(cupy_vector)
+    # u = cupy.asnumpy(u)
+    # ev = cupy.asnumpy(ev)
+    # components['svd_eigval'] = ev # Not used anywhere, should I store this?
+
+    # Get starting point for decomposition based on svd mutliplier * the 
+    # approximate point of transition to linearity in tail of ev components.
+    cross_1 = approximate_svd_linearity_transition(ev)
+    n_components = cross_1 * svd_multiplier
+    w_init = u[:n_components, :n_components].astype('float64')
+    
+    return n_components, w_init
+
+
+def approximate_svd_linearity_transition(eig_val: np.ndarray):
+    '''
+    Approximates the transition between the svd signal distribution and 
+    the noise floor.
+
+    Calculates the integral of the eigenvalue 'influence' per component, 
+    fits a 2 degree polynomial to the curve, and looks for the point at 
+    which the integrated eigenvalues first overshoot the polynomial fit.
+    This transition point (multiplied by a hyperparameter) is used to inform 
+    the ICA n_components parameter.
+
+    Arguments:
+        eig_val: 
+            The eigenvalues of the SVD decomposition.
+
+    Returns:
+        transition: 
+            The estimate of the SVD noise floor cutoff.
+    '''
+    eig_val -= eig_val.min()
+    eig_val = eig_val / eig_val.sum()
+    eig_val_integrated = np.cumsum(eig_val)
+    x = np.arange(eig_val.size)
+
+    p = np.polyfit(x, eig_val_integrated, deg=2)
+    y = np.polyval(p, x)
+
+    transition = np.where(eig_val_integrated > y)[0][0]
+
+    return transition
+
+
+def unflip_components(components: Components) -> dict:
+    # Track component orientation and ensure positive spatial patterns
+    n_components = components.n_components
+    eig_vec = np.zeros_like(components.eig_vec)
+    eig_mix = np.zeros_like(components.eig_mix)
+    flipped = np.ones(n_components)
+    
+    for i in range(n_components):
+        # Find the index of maximum absolute value
+        max_idx = np.argmax(np.abs(components.eig_vec[:, i]))
+        # If that maximum value is negative, flip the component
+        if components.eig_vec[max_idx, i] < 0:
+            eig_vec[:, i] = -1 * components.eig_vec[:, i]
+            eig_mix[:, i] = -1 * components.eig_mix[:, i]
+            flipped[i] = -1
+
+        output = {}
+        output['eig_vec'] = eig_vec
+        output['eig_mix'] = eig_mix
+        output['flipped'] = flipped
+
+        return output
+
+
+def crop_excess_noise(components: Components) -> dict:
+    n_components = components.n_components
+    eig_vec = components.eig_vec
+    eig_mix = components.eig_mix
+    noise = components.noise_components
+    
+    print('Cropping excess noise components')
+    reduced_n_components = int((noise.size - noise.sum()) * 1.25)
+    print('reduced_n_components:', reduced_n_components)
+    if reduced_n_components < n_components:
+        print('Cropping', n_components, 'to', reduced_n_components)
+
+        eig_vec = eig_vec[:, :reduced_n_components]
+        eig_mix = eig_mix[:, :reduced_n_components]
+        n_components = reduced_n_components
+        noise_components = noise[:reduced_n_components]
+        
+        # Recalculate lag1 for reduced components
+        timecourses = eig_mix.T
+        lag1 = lag_n_autocorr(timecourses, 1)
+
+        output = {}
+        output['eig_vec'] = eig_vec
+        output['eig_mix'] = eig_mix
+        output['n_components'] = n_components
+        output['noise_components'] = noise_components
+        output['lag1'] = lag1
+
+        return output
+    else:
+        print('Less than 75% signal.  Not cropping excess noise.')
+
+
+def sort_components(components: Components | None = None,
+                    sort_by: str = 'timecourse_std') -> dict:
+    '''
+    Sorts components by some metric before cropping excess noise.
+    '''
+    assert components is not None, 'Components must be provided for sort.'
+    eig_mix = components.eig_mix
+    eig_vec = components.eig_vec
+    noise = components.noise_components
+    lag1 = components.lag1
+    lag1_full = components.lag1_full
+    match sort_by:
+        case 'timecourse_std': # Original pySEAS default.
+            # Sort components by their eig val influence (approximated by timecourse standard deviation).
+            # NOTE: This doesn't guarantee all removed components are noise.
+            ev_sort = np.argsort(eig_mix.std(axis=0))
+        case 'lag1': # Guarantees correct ordering for noise cropping
+            ev_sort = np.argsort(lag1)
+    eig_vec = eig_vec[:, ev_sort][:, ::-1]
+    eig_mix = eig_mix[:, ev_sort][:, ::-1]
+    noise_components = noise[ev_sort][::-1]
+    lag1 = [ev_sort][::-1]
+    lag1_full = lag1_full[ev_sort][::-1]
+
+    output = {}
+    output['eig_vec'] = eig_vec
+    output['eig_mix'] = eig_mix
+    output['noise_components'] = noise_components
+    output['lag1'] = lag1
+    output['lag1_full'] = lag1_full
+
+    return output
+
+
+def validate_projection(projection: Projection) -> Tuple[bool, int, int]:
+        
+        n_components = projection.n_components
+        noise = projection.noise
+        frames = projection.eig_mix.shape[1]
+        increased_cutoff = projection.increased_cutoff
+
+        assert noise.size == n_components, \
+            "Noise length doesn't match n_components, something is wrong."
+
+        # Test signal vs noise to determine if underdecomposed
+        underdecomposed = check_noise_proportion(noise, frames)
+
+        # Increase components for next loop if necessary
+        if underdecomposed:
+            n_components += n_components // 2
+            if n_components > frames:
+                print('\nComponents maxed out!')
+                print('\tAttempted:', n_components)
+                n_components = frames
+                print('\tReduced to:', frames)
+            increased_cutoff += 1
+
+        return (underdecomposed, n_components, increased_cutoff)
+
+
+def check_noise_proportion(noise: np.ndarray, frames: int) -> bool:
+            n_components = noise.size
+            p_signal = (1 - noise.sum() / noise.size) * 100
+            if noise.size == frames:  # All components are being used.
+                return False
+            elif p_signal < 75: # Data is sufficiently decomposed.
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                return False
+            elif n_components >= frames: # Data is maximally decomposed.
+                print('ICA components were under 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('However, number of components is maxed out.')
+                print('Using this decomposition...')
+                return False
+            else: # Data is underdecomposed.
+                print('ICA components were over 75% signal ({0}% signal).'\
+                    .format(p_signal))
+                print('Recalculating with more components...')
+                return True
 
 
 def filter_mean(mean: np.ndarray,
