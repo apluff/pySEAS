@@ -38,8 +38,8 @@ class _AMICA(Projector):
             self.estimator = estimator
             
     def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        mean = np.mean(input.vector, 0).flatten()
-        vector = input.vector - mean
+        mean = np.mean(vector, 0).flatten()
+        vector = vector - mean
 
         return mean, vector
     
@@ -82,9 +82,9 @@ class _torchNMF(Projector):
         self.estimator = estimator
 
     def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        mean = np.mean(input.vector, 0).flatten()
-        vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
-        
+        mean = np.mean(vector, 0).flatten()
+        vector = vector + np.abs(np.min(input.vector)) + 1e-8
+
         return mean, vector
 
     def project(self, 
@@ -122,6 +122,12 @@ class Estimator(Projector):
     @abstractmethod
     def __init__(self):
             pass
+
+    def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            mean = np.mean(vector, 0).flatten()
+            vector = vector - mean
+    
+            return mean, vector
 
     # Goose method QUACK
     # This interface allows estimators (that calculate all components)
