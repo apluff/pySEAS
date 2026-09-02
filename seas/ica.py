@@ -289,8 +289,8 @@ class Components(MutableMapping):
 
     def unflip_components(self) -> None:
         # Track component orientation and ensure positive spatial patterns
-        eig_vec = np.zeros_like(self.eig_vec)
-        eig_mix = np.zeros_like(self.eig_mix)
+        eig_vec = self.eig_vec.copy()
+        eig_mix = self.eig_mix.copy()
         flipped = np.ones(self.n_components)
         
         for i in range(self.n_components):
