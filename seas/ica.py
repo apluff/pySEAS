@@ -357,7 +357,7 @@ def project(input: Input, config: Config) -> Components:
 
     print('\nCalculating Eigenspace\n-----------------------')
     calculator = get_projector(config)
-    mean, vector = calculator.preprocess(vector)
+    mean, vector = calculator.preprocess(input.vector)
     t0 = timer()
     projection = projection_loop(vector, calculator, config)
     t = timer() - t0
@@ -374,7 +374,7 @@ def project(input: Input, config: Config) -> Components:
                             lag1=projection.lag1_full,
                             lag1_full=projection.lag1_full,
                             cutoff=projection.cutoff,
-                            svd_cutoff=svd_cutoff,
+                            svd_cutoff=projection.svd_cutoff,
                             svd_multiplier=config.svd_multiplier,
                             increased_cutoff=projection.increased_cutoff)
     
@@ -397,7 +397,7 @@ def project(input: Input, config: Config) -> Components:
         #     print('Noise retention enabled. Not cropping excess noise.')
     
     # Sort components then crop noise
-    components.sort_components(sort_by='lag1')
+    components.sort_components(sort_by='timecourse_std')
     if config.crop_excess_noise:
         components.crop_excess_noise()
     else:
@@ -421,8 +421,7 @@ def project(input: Input, config: Config) -> Components:
     return components
 
 
-def projection_loop(self,
-                    vector: np.ndarray,
+def projection_loop(vector: np.ndarray,
                     projector: Projector,
                     config: Config) -> Projection:
     '''
@@ -463,7 +462,7 @@ def projection_loop(self,
             svd_cutoff=svd_cutoff,
             )
 
-        if self.n_components is None:
+        if n_components is None:
             underdecomposed, n_components, increased_cutoff = \
                 validate_projection(projection)
         else:
