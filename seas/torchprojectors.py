@@ -14,7 +14,14 @@ from seas.signalanalysis import sort_noise, lag_n_autocorr
 class Projector(ABC):
 
     @abstractmethod
-    def project(self, vector) -> Projection:
+    def preprocess(self, vector) -> Tuple[np.ndarray, np.ndarray]:
+        pass
+
+    @abstractmethod
+    def project(self, 
+                vector, 
+                n_components, 
+                w_init) -> Tuple[np.ndarray, np.ndarray]:
         pass
 
 
@@ -29,68 +36,37 @@ class _AMICA(Projector):
             self.svd_multiplier = svd_multiplier
             self.max_iter = max_iter
             self.estimator = estimator
+            
+    def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        mean = np.mean(input.vector, 0).flatten()
+        vector = input.vector - mean
+
+        return mean, vector
     
-    def project(self, vector: np.ndarray) -> Projection:
-        '''
-        Replicates original FastICA processing in conjunction with the
-        top-level function project() (original wrapper) per Weiser et al. 2023.
-        '''
-        # Estimate n_components if necessary
-        if self.n_components is None:
-            n_components, w_init = estimate_n_components(vector, 
-                                                         self.svd_multiplier,
-                                                         self.estimator,
-                                                         )
-        else:
-            n_components = self.n_components
-            w_init = None
-        
-        underdecomposed = True # To init loop
-        increased_cutoff = 0
-        while underdecomposed:
+    def project(self, 
+                vector: np.ndarray,
+                n_components: int,
+                w_init: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        print('\nCalculating ICA with', n_components, 'components...')
+        ica = AMICA(n_components=n_components,
+                    max_iter=self.max_iter,
+                    random_state=1000,
+                    w_init=w_init,
+                    device='cuda',
+                    do_newton=False,
+                    )
+        try:
+            eig_vec = ica.fit_transform(vector)  # Eigenbrains
+        except ValueError:
+            print('Calculation exceeded float32 maximum.')
+            print('Trying again with float64 vector...')
+            # Value error if any value exceeds float32 maximum.
+            # Overcome this by converting to float64.
+            eig_vec = ica.fit_transform(vector.astype('float64'))
+        print("n_iter:" , ica.n_iter_)
+        eig_mix = ica.mixing_
 
-            # Calculate ICA
-            print('\nCalculating ICA with', n_components, 'components...')
-            ica = AMICA(n_components=n_components,
-                        max_iter=self.max_iter,
-                        random_state=1000,
-                        w_init=w_init,
-                        device='cuda',
-                        do_newton=False,
-                        )
-            try:
-                eig_vec = ica.fit_transform(vector)  # Eigenbrains
-            except ValueError:
-                print('Calculation exceeded float32 maximum.')
-                print('Trying again with float64 vector...')
-                # Value error if any value exceeds float32 maximum.
-                # Overcome this by converting to float64.
-                eig_vec = ica.fit_transform(vector.astype('float64'))
-            print("n_iter:" , ica.n_iter_)
-            eig_mix = ica.mixing_
-
-            # Calculate noise
-            timecourses = eig_mix.T
-            lag1 = lag_n_autocorr(timecourses, 1)
-            noise, cutoff = sort_noise(timecourses, lag1)
-
-            projection = Projection(
-                n_components=n_components,
-                eig_vec=eig_vec,
-                eig_mix=eig_mix,
-                lag1_full=lag1,
-                noise=noise,
-                cutoff=cutoff,
-                increased_cutoff=increased_cutoff,
-            )
-
-            if self.n_components is None:
-                underdecomposed, n_components, increased_cutoff = \
-                    validate_projection(projection)
-            else:
-                underdecomposed = False
-
-            return projection
+        return eig_vec, eig_mix
 
 
 class _torchNMF(Projector):
@@ -105,70 +81,40 @@ class _torchNMF(Projector):
         self.max_iter = max_iter
         self.estimator = estimator
 
-    def project(self, vector: np.ndarray) -> Projection:
-        '''
-        Replicates original FastICA processing in conjunction with the
-        top-level function project() (original wrapper) per Weiser et al. 2023.
-        '''
-        # Estimate n_components if necessary
-        if self.n_components is None:
-            n_components, _ = estimate_n_components(vector, 
-                                                    self.svd_multiplier,
-                                                    self.estimator,
-                                                    )
-        else:
-            n_components = self.n_components
+    def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        mean = np.mean(input.vector, 0).flatten()
+        vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
+        
+        return mean, vector
 
+    def project(self, 
+                vector: np.ndarray,
+                n_components: int,
+                w_init: None) -> Tuple[np.ndarray, np.ndarray]:
+        
         print(f"vector min is: {np.min(vector)}")
         assert not np.any(vector < 0), \
             "Negative values exist in supplied vector for NMF."
 
-        # Initialise NMF
+        # Calculate decomposition
+        print('\nCalculating NMF on CUDA with', n_components, 'components...')
         W, H = _initialize_nmf(vector.T, n_components, random_state=1000)
-
-        underdecomposed = True # To init loop
-        increased_cutoff = 0
-        while underdecomposed:
-
-            # Calculate decomposition
-            print('\nCalculating NMF with', n_components, 'components...')
-            torch_vector = torch.from_numpy(vector)
-            torch_vector = torch_vector.t().cuda()
-            nmf = torchnmf.nmf.NMF(torch_vector.shape,
-                                   W=W,
-                                   H=H,
-                                   rank=n_components,
-                                   )
-            nmf = nmf.cuda()
-            total_iter = nmf.fit(torch_vector)
-            W = nmf.W
-            eig_vec = W.detach().cpu().numpy()  # Eigenbrains
-            print("n_iter:" , total_iter)
-            H = nmf.H
-            eig_mix = H.detach().cpu().numpy()
-
-            # Calculate noise
-            timecourses = eig_mix.T
-            lag1 = lag_n_autocorr(timecourses, 1)
-            noise, cutoff = sort_noise(timecourses, lag1)
-
-            projection = Projection(
-                n_components=n_components,
-                eig_vec=eig_vec,
-                eig_mix=eig_mix,
-                lag1_full=lag1,
-                noise=noise,
-                cutoff=cutoff,
-                increased_cutoff=increased_cutoff,
-            )
-
-            if self.n_components is None:
-                underdecomposed, n_components, increased_cutoff = \
-                    validate_projection(projection)
-            else:
-                underdecomposed = False
+        torch_vector = torch.from_numpy(vector)
+        torch_vector = torch_vector.t().cuda()
+        nmf = torchnmf.nmf.NMF(torch_vector.shape,
+                                W=W,
+                                H=H,
+                                rank=n_components,
+                                )
+        nmf = nmf.cuda()
+        total_iter = nmf.fit(torch_vector)
+        W = nmf.W
+        eig_vec = W.detach().cpu().numpy()  # Eigenbrains
+        print("n_iter:" , total_iter)
+        H = nmf.H
+        eig_mix = H.detach().cpu().numpy()
         
-        return projection
+        return eig_vec, eig_mix
 
 
 class Estimator(Projector):
