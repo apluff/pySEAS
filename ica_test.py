@@ -5,10 +5,10 @@ import tifffile as tif
 import matplotlib.pyplot as plt
 from seas.ica import Input, Config, Components
 
-TEST_VIDEO="/home/apluff/Projects/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_video-dfof_scrop-cortex_sbin-4x.tif"
-TEST_MASK="/home/apluff/Projects/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_image-mask_scrop-cortex_sbin-4x.tif"
+TEST_VIDEO="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_video-dfof.tif"
+TEST_MASK="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_image-mask.tif"
 TEST_MAXITER=1000
-TEST_OUTPATH="sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-cortex_sbin-4x_ica-test.hdf5"
+TEST_OUTPATH="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_ica-picardOtest.hdf5"
 
 def load_data(video: np.ndarray, mask: np.ndarray) -> Input:
     # Load video and mask data
@@ -37,8 +37,8 @@ def load_data(video: np.ndarray, mask: np.ndarray) -> Input:
 
 def run_ica(input: Input, config: Config) -> Components:
         components = seas.ica.project(input, config)
-        domain_map = seas.domains.get_domain_map(components, map_only=False)
-        components.update(domain_map)
+        #domain_map = seas.domains.get_domain_map(components, map_only=False)
+        #components.update(domain_map)
 
         return components
 
@@ -50,12 +50,12 @@ def save_data(components: Components, outpath: str) -> None:
 
 def main(video, max_iter, mask, outpath, test_projector) -> None:
     input = load_data(video, mask)
-    config = Config(n_components=None,
+    config = Config(n_components=1040,
                     calc_residuals=False,
                     crop_excess_noise=False, 
                     max_iter=max_iter,
                     projector=test_projector,
-                    estimator='cusvd',
+                    estimator='svd',
                     )
     print(f'Running ICA test with projector: {test_projector}')
     components = run_ica(input, config)
