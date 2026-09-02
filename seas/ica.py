@@ -11,13 +11,7 @@ from seas.waveletAnalysis import waveletAnalysis
 from seas.signalanalysis import butterworth, sort_noise, lag_n_autocorr
 from seas.hdf5manager import hdf5manager
 from seas.video import rotate, save, rescale, play, scale_video
-from seas.projectors import (_FastICA, 
-                             _PicardICA, 
-                             _NMF, 
-                             _SVD, 
-                             Projection,
-                             Projector,
-                            )
+from seas.projectors import _FastICA, _PicardICA, _NMF, _SVD, _AMICA, _cuSVD, Projection, Projector, Estimator
 
 import cv2
 from skimage.morphology import remove_small_objects
@@ -116,8 +110,8 @@ class Input:
     '''
     vector: np.ndarray
     shape: Tuple[int, int, int]
-    roimask: np.ndarray = None
-    maskind: np.ndarray = None
+    roimask: np.ndarray | None = None
+    maskind: np.ndarray | None = None
 
     def __post_init__(self):
         assert (self.vector.ndim == 2), (
@@ -199,7 +193,7 @@ class Components(MutableMapping):
     svd_cutoff: int | None
     svd_multiplier: float | None
     increased_cutoff: int | None
-    flipped: np.ndarray = None
+    flipped: np.ndarray | None = None
     project_meta: dict = field(default_factory=dict)
     _extra: dict = field(default_factory=dict)
 
@@ -406,7 +400,7 @@ def crop_excess_noise(components: Components) -> dict:
         print('Less than 75% signal.  Not cropping excess noise.')
 
 
-def sort_components(components: Components = None,
+def sort_components(components: Components | None = None,
                     sort_by: str = 'timecourse_std') -> dict:
     '''
     Sorts components by some metric before cropping excess noise.
@@ -438,6 +432,54 @@ def sort_components(components: Components = None,
     output['lag1_full'] = lag1_full
 
     return output
+
+def projection_loop(self,
+                    vector: np.ndarray,
+                    projector: Projector,
+                    estimator: Estimator | None,
+                    config: Config) -> Projection:
+    '''
+    Replicates original FastICA processing in conjunction with the
+    top-level function project() (original wrapper) per Weiser et al. 2023.
+    '''
+    # Estimate n_components if necessary
+    if estimator is not None and config.n_components is None:
+        n_components, w_init = estimate_n_components(vector, 
+                                                     config.svd_multiplier,
+                                                     estimator,
+                                                     )
+    else:
+        n_components = config.n_components
+        w_init = None
+
+    underdecomposed = True # To init loop
+    increased_cutoff = 0
+    while underdecomposed:
+        print('\nCalculating ICA with', n_components, 'components...')
+        eig_vec, eig_mix = projector.project(vector, n_components, w_init)
+
+        # Calculate noise
+        timecourses = eig_mix.T
+        lag1 = lag_n_autocorr(timecourses, 1)
+        noise, cutoff = sort_noise(timecourses, lag1)
+
+        projection = Projection(
+            n_components=n_components,
+            eig_vec=eig_vec,
+            eig_mix=eig_mix,
+            lag1_full=lag1,
+            noise=noise,
+            cutoff=cutoff,
+            increased_cutoff=increased_cutoff,
+            )
+
+        if self.n_components is None:
+            underdecomposed, n_components, increased_cutoff = \
+                validate_projection(projection)
+        else:
+            underdecomposed = False
+
+    return projection
 
 
 def get_projector(config: Config) -> Projector:
@@ -720,7 +762,7 @@ def projectWIP(input: Input, config: Config) -> Components:
 
 
 def rebuild(components: dict | str,
-            artifact_components: np.ndarray = None,
+            artifact_components: np.ndarray | None = None,
             t_start: int | None = None,
             t_stop: int | None = None,
             apply_mean_filter: bool = True,
@@ -834,7 +876,7 @@ def rebuild(components: dict | str,
             return data_r
 
     def derive_reconstruct_indices(components: dict, 
-                                   artifact_components: np.ndarray = None, 
+                                   artifact_components: np.ndarray | None = None, 
                                    include_noise: bool = False) -> np.ndarray:
         n_components = components['n_components']
 
@@ -854,8 +896,8 @@ def rebuild(components: dict | str,
 
     def reshape_rebuilt_video(data_r: np.ndarray, 
                               shape: Tuple[int, int, int], 
-                              roimask: np.ndarray = None, 
-                              maskind: np.ndarray = None):
+                              roimask: np.ndarray | None = None, 
+                              maskind: np.ndarray | None = None):
         if roimask is None:
             data_r = data_r.reshape(shape)
         else:

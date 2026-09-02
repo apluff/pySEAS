@@ -257,6 +257,42 @@ class _FastICA(Projector):
         return projection
 
 
+class _FastICA_Testing(Projector):
+
+    def __init__(self, 
+                 n_components: int | None = None, 
+                 svd_multiplier: float | None = 5, 
+                 max_iter: int = 1000,
+                 estimator: str | None = 'svd') -> None:
+        self.n_components = n_components
+        self.svd_multiplier = svd_multiplier
+        self.max_iter = max_iter
+        self.estimator = estimator
+
+    def project(self, 
+                vector: np.ndarray, 
+                n_components: int,
+                w_init: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        
+        ica = FastICA(n_components = n_components,
+                    max_iter = self.max_iter,
+                    random_state = 1000,
+                    w_init = w_init,
+                    )
+        try:
+            eig_vec = ica.fit_transform(vector)  # Eigenbrains
+        except ValueError:
+            print('Calculation exceeded float32 maximum.')
+            print('Trying again with float64 vector...')
+            # Value error if any value exceeds float32 maximum.
+            # Overcome this by converting to float64.
+            eig_vec = ica.fit_transform(vector.astype('float64'))
+        print("n_iter:" , ica.n_iter_)
+        eig_mix = ica.mixing_
+
+        return eig_vec, eig_mix
+
+
 class _PicardICA(Projector):
 
     def __init__(self, 
