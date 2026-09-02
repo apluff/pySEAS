@@ -11,7 +11,13 @@ from seas.waveletAnalysis import waveletAnalysis
 from seas.signalanalysis import butterworth, sort_noise, lag_n_autocorr
 from seas.hdf5manager import hdf5manager
 from seas.video import rotate, save, rescale, play, scale_video
-from seas.projectors import _FastICA, _PicardICA, _NMF, _SVD, _AMICA, _cuSVD, Projection
+from seas.projectors import (_FastICA, 
+                             _PicardICA, 
+                             _NMF, 
+                             _SVD, 
+                             Projection,
+                             Projector,
+                            )
 
 import cv2
 from skimage.morphology import remove_small_objects
@@ -24,7 +30,7 @@ from dataclasses import dataclass, field, fields, asdict
 from typing import Dict
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
-import zarr
+import zarr 
 from picard import Picard, picard
 from sklearn.utils.extmath import randomized_svd
 from amica import AMICA
@@ -64,12 +70,13 @@ class Config:
             'amica', 
             'nmf', 
             'svd',
+            'torchnmf',
+            'torchsvd',
             ]
         valid_estimators = [
             None, 
             'svd', 
-            'cusvd',
-            'randomized_svd',
+            'torchsvd',
             ]
 
         # Validate config
@@ -433,6 +440,54 @@ def sort_components(components: Components = None,
     return output
 
 
+def get_projector(config: Config) -> Projector:
+    # We only import from torchprojectors as necessary due to its torch and
+    # cuda requirements.
+    match config.projector:
+        case 'fastica':
+            calculator = _FastICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier, 
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator)
+        case 'picard':
+            calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator)
+        case 'picard-orth':
+            calculator = _PicardICA(n_components=config.n_components,
+                                    svd_multiplier=config.svd_multiplier,
+                                    max_iter=config.max_iter,
+                                    estimator=config.estimator,
+                                    ortho=True)
+        case 'amica':
+            from seas.torchprojectors import _AMICA
+            calculator = _AMICA(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
+        case 'nmf':
+            calculator = _NMF(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
+            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
+        case 'torchnmf':
+            from seas.torchprojectors import _torchNMF
+            calculator = _torchNMF(n_components=config.n_components,
+                                svd_multiplier=config.svd_multiplier,
+                                max_iter=config.max_iter,
+                                estimator=config.estimator)
+            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
+        case 'svd':
+            calculator = _SVD()
+        case 'torchsvd':
+            from seas.torchprojectors import _torchSVD
+            calculator = _torchSVD()
+
+    return calculator
+
+
 def project(input: Input, config: Config) -> Components:
     '''
     Apply a decomposition to the first axis of the input vector.  
@@ -459,50 +514,13 @@ def project(input: Input, config: Config) -> Components:
     '''
 
     print('\nCalculating Eigenspace\n-----------------------')
-    
-    # ========================== Preprocessing ========================== #
-
     mean = np.mean(input.vector, 0).flatten()
     vector = input.vector - mean
-    
-    # ========================== Projection ========================== #
-
-    # TODO: Add cases for new projectors
-    match config.projector:
-        case 'fastica':
-            calculator = _FastICA(n_components=config.n_components,
-                                  svd_multiplier=config.svd_multiplier, 
-                                  max_iter=config.max_iter,
-                                  estimator=config.estimator)
-        case 'picard':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator)
-        case 'picard-orth':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator,
-                                    ortho=True)
-        case 'amica':
-            calculator = _AMICA(n_components=config.n_components,
-                                svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter,
-                                estimator=config.estimator)
-        case 'nmf':
-            calculator = _NMF(n_components=config.n_components,
-                              svd_multiplier=config.svd_multiplier,
-                              max_iter=config.max_iter,
-                              estimator=config.estimator)
-            vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
-        case 'pca':
-            calculator = _SVD()
-
+    calculator = get_projector(config)
     t0 = timer()
     projection = calculator.project(vector)
     t = timer() - t0
-    print('Independent Component Analysis took: {0} sec'.format(t))
+    print('Data projection took: {0} sec'.format(t))
 
     if config.n_components is None:
         svd_cutoff = projection.n_components
@@ -632,14 +650,14 @@ def projectWIP(input: Input, config: Config) -> Components:
                                 estimator=config.estimator)
             vector = input.vector + np.abs(np.min(input.vector)) + 1e-8
         case 'pca':
-            calculator = _cuSVD()
+            calculator = _torchSVD()
             PCA = True
 
     match config.estimator:
         case 'svd':
             estimator = _SVD()
         case 'cusvd':
-            estimator = _cuSVD()
+            estimator = _torchSVD()
     
     # ========================== Projection ========================== #
 
