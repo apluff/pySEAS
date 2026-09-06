@@ -2,7 +2,7 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from timeit import default_timer as timer
-from typing import Tuple
+from typing import Tuple, List
 
 from seas.waveletAnalysis import waveletAnalysis
 from seas.signalanalysis import butterworth, sort_noise, lag_n_autocorr
@@ -16,6 +16,7 @@ from seas.projectors import (_FastICA,
                             )
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 from skimage.morphology import remove_small_objects
 from skimage import draw
@@ -517,6 +518,261 @@ def get_projector(config: Config) -> Projector:
     return calculator
 
 
+# def rebuild(components: dict | str,
+#             artifact_components: np.ndarray | None = None,
+#             t_start: int | None = None,
+#             t_stop: int | None = None,
+#             apply_mean_filter: bool = True,
+#             mlow: float = 0.5,
+#             mhigh: float = 1.0,
+#             apply_component_filter: bool = False,
+#             chigh: float = 1.0,
+#             apply_component_threshold: bool = False,
+#             cthresh: float = 2.0,
+#             apply_masked_mean: bool = False,
+#             binary_threshold: bool = False,
+#             filter_method: str = 'wavelet',
+#             fps: float = 7.5,
+#             include_noise: bool = True,
+#             splitting: str | None = None):
+#     '''
+#     Rebuild original vector space based on a subset of principal 
+#     components of the data.  Eigenvectors to use are specified where 
+#     artifact_components == False.  Returns a matrix data_r, the reconstructed 
+#     vector projected back into its original dimensions.
+
+#     Arguments:
+#         components: 
+#             The components from ica_project.  artifact_components must be assigned to components before rebuilding, or passed in explicitly
+#         artifact_components:
+#             Overrides the artifact_components key in components, to rebuild all components except those specified
+#         t_start: 
+#             The frame to start rebuilding the movie at.  If none is provided, the rebuilt movie starts at the first frame
+#         t_stop: 
+#             The frame to stop rebuilding the movie at.  If none is provided, the rebuilt movie ends at the last frame
+#         apply_mean_filter:
+#             Whether to apply a filter to the mean signal.
+#         mlow:
+#             A float determining the highpass cutoff for the mean filter, if used.
+#         mhigh:
+#             A float determining the lowpass cutoff for the mean filter, if used.
+#         apply_component_filter:
+#             Whether to apply a butterworth_lowpass filter to IC timecourses before rebuild.
+#         chigh:
+#             A float determining the lowpass cutoff for the component filter, if used.
+#         apply_component_threshold:
+#             Whether to apply a z-score threshold on the component timeseries.
+#         cthresh:
+#             A float determining the z-score threshold for the component threshold, if used.
+#         apply_masked_mean:
+#             If True, only re-adds the mean signal to pixels where at least one IC is defined. To be used for thresholded ICs.
+#         filter_method:
+#             The filter method to apply to the mean. Choose from 'butterworth_bandpass', 'butterworth_lowpass', 'butterworth_highpass', or 'constant'. Behaviour for 'wavelet' as yet undefined.
+#         fps:
+#             A float determining the fps for the source video.
+#         include_noise:
+#             Whether to include noise components when rebuilding.  If noise_components should not be included in the rebuilt movie, set this to False
+
+#     Returns:
+#         data_r: The ICA filtered video.
+#     '''
+#     def _rebuild_full_video(eig_vec, eig_mix, 
+#                         mean, reconstruct_indices, 
+#                         t_start, t_stop,
+#                         shape, roimask, maskind):
+#         print('\nReconstructing full video...')
+#         data_r = np.dot(eig_vec[:, reconstruct_indices],
+#                         eig_mix[t_start:t_stop, reconstruct_indices].T).T
+#         # Re-add mean timecourse
+#         data_r += mean[t_start:t_stop, None]
+#         print('Done!')
+#         # Reshaping
+#         data_r = reshape_rebuilt_video(data_r, shape, roimask, maskind)
+#         return data_r
+
+#     def _rebuild_component_videos(eig_vec, eig_mix, 
+#                                 mean, reconstruct_indices, 
+#                                 t_start, t_stop,
+#                                 shape, roimask, maskind):
+#         print('\nReconstructing per component...')
+#         data_r = {}
+#         for idx in reconstruct_indices:
+#             i = idx + 1 # Convert to 1-base for component labelling
+#             print('\nRebuilding component: ', i)
+#             data_s = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
+#             data_c = np.stack(data_s, axis = 0)
+#             #Re-add mean timecourse
+#             data_c += mean[t_start:t_stop, None]
+#             # Reshaping
+#             data_c = scale_dfof_to_8bit(data_c)
+#             data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+#             # Assign to compressed array (defaults to zstd)
+#             data_z = zarr.create_array(shape = data_c.shape, 
+#                                        chunks = (8, 8), 
+#                                        dtype = data_c.dtype)
+#             data_z[:] = data_c
+#             data_r[int(i)] = data_z
+#         return data_r
+
+#     def _rebuild_cluster_videos(eig_vec, eig_mix, 
+#                                 mean, cluster_indices, 
+#                                 t_start, t_stop,
+#                                 shape, roimask, maskind):
+#             print('\nReconstructing per cluster...')
+#             data_r = {}
+#             for i in cluster_indices[0]:
+#                 if len(cluster_indices[i]) == 1:
+#                     data_c = [eig_vec[:,i] * m for m in eig_mix[t_start:t_stop, i]]
+#                 else:    
+#                     data_c = np.dot(eig_vec[:, cluster_indices[i]],
+#                                     eig_mix[t_start:t_stop, cluster_indices[i]].T).T
+#                 data_c += mean[t_start:t_stop, None]
+#                 data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+#                 data_c = scale_dfof_to_8bit(data_c)
+#                 data_r[int(i)] = data_c
+#             return data_r
+
+#     def derive_reconstruct_indices(components: dict, 
+#                                    artifact_components: np.ndarray | None = None, 
+#                                    include_noise: bool = False) -> np.ndarray:
+#         n_components = components['n_components']
+
+#         if artifact_components is None:
+#             artifact_components = components['artifact_components']
+#         elif artifact_components == 'none':
+#             print('including all components')
+#             artifact_components = np.zeros(n_components)
+        
+#         if ((not include_noise) and ('noise_components' in components.keys())):
+#             print('Not rebuilding noise components')
+#             artifact_components += components['noise_components']
+#             artifact_components[np.where(artifact_components > 1)] = 1
+
+#         reconstruct_indices = np.where(artifact_components == 0)[0]
+#         return reconstruct_indices
+
+#     def reshape_rebuilt_video(data_r: np.ndarray, 
+#                               shape: Tuple[int, int, int], 
+#                               roimask: np.ndarray | None = None, 
+#                               maskind: np.ndarray | None = None):
+#         if roimask is None:
+#             data_r = data_r.reshape(shape)
+#         else:
+#             t, x, y = shape
+#             reconstructed = np.zeros((x * y, t), dtype = np.float32)
+#             print(f'data_r shape is: {data_r.shape}')
+#             print(f'reconstructed shape is: {reconstructed.shape}')
+#             print(f'maskind is: {maskind}')
+#             reconstructed[maskind] = data_r.swapaxes(0, 1)
+#             reconstructed = reconstructed.swapaxes(0, 1)
+#             data_r = reconstructed.reshape(t, x, y)
+#         return data_r
+
+#     def scale_dfof_to_8bit(data_r: np.ndarray) -> np.ndarray:
+#         assert data_r.dtype == np.float32, "Data is not in dF/F format."
+#         data_r[data_r < 0.0] = 0.0
+#         data_r = data_r*255
+#         data_r[data_r > 255.0] = 255.0
+#         data_r = data_r.astype(np.uint8)
+#         return data_r
+
+#     print('\nRebuilding Data from Selected ICs\n-----------------------')
+
+#     if type(components) is str:
+#         f = hdf5manager(components)
+#         components = f.load()
+
+#     # assert type(components) is dict or Components, \
+#     #     'Components were not in format expected'
+
+#     # Localising variables
+#     eig_vec = components.eig_vec
+#     eig_mix = components.eig_mix
+#     shape = components.shape
+#     roimask = components.roimask
+#     maskind = components.maskind
+#     mean = components.mean
+#     t, x, y = shape
+
+#     # Determine reconstruction indices
+#     reconstruct_indices = derive_reconstruct_indices(components, 
+#                                                      artifact_components, 
+#                                                      include_noise)
+#     if reconstruct_indices.size == 0:
+#         print('No indices were selected for reconstruction.')
+#         print('Returning empty matrix...')
+#         data_r = np.zeros((t, x, y), dtype='uint8')
+#         data_r = data_r[t_start:t_stop]
+#         return data_r
+#     n_components = reconstruct_indices.size
+
+#     # Determine cluster indices (if available)
+#     if hasattr(components, 'clusters') and components.clusters is not None:
+#         cluster_indices = {}
+#         for i in np.unique(components.clusters):
+#             current_cluster_indices = np.where(components.clusters == i)
+#             cluster_indices[i] = np.intersect1d(current_cluster_indices, 
+#                                                 reconstruct_indices)
+
+#     # Filter mean timecourse
+#     if apply_mean_filter:
+#         mean = filter_mean(mean, 
+#                            filter_method, 
+#                            low_cutoff = mlow, 
+#                            high_cutoff = mhigh, 
+#                            fps = fps)
+#     else:
+#         print('Not filtering mean timecourse.')
+
+#     # Filter component timecourses
+#     if apply_component_filter:
+#         lpf_eig_mix = filter_components(eig_mix, 
+#                                         fps = fps, 
+#                                         high_cutoff = chigh)
+#         eig_mix = lpf_eig_mix
+#     else:
+#         print('Not filtering component timecourses.')
+
+#     # Threshold component timecourses
+#     if apply_component_threshold:
+#         thresh_eig_mix = threshold_components(eig_mix, thresh_param = cthresh)
+#         eig_mix = thresh_eig_mix
+#     else:
+#         print('Not thresholding component timecourses.')
+
+#     # Determine start and stop bounds
+#     if (t_start == None):
+#         t_start = 0
+#     if (t_stop == None):
+#         t_stop = eig_mix.shape[0]
+#     if (t_stop - t_start) is not shape[0]:
+#         shape = (t_stop - t_start, shape[1], shape[2])
+#     t = t_stop - t_start
+
+#     #eig_mix = eig_mix[t_start:t_stop, :]
+
+#     # Reconstruction
+#     print('\nRebuilding ICA...')
+#     print('number of elements included:', n_components)
+#     print('eig_vec:', eig_vec.shape)
+#     print('eig_mix:', eig_mix.shape)
+#     match splitting:
+#         case None:
+#             data_r = _rebuild_full_video(eig_vec, eig_mix, mean,
+#                                          reconstruct_indices, t_start, 
+#                                          t_stop, shape, roimask, maskind)
+#         case 'components':
+#             data_r = _rebuild_component_videos(eig_vec, eig_mix, mean,
+#                                                reconstruct_indices, t_start, 
+#                                                t_stop, shape, roimask, maskind)
+#         case 'clusters':
+#             data_r = _rebuild_cluster_videos(eig_vec, eig_mix, mean,
+#                                              cluster_indices, t_start, 
+#                                              t_stop, shape, roimask, maskind)
+
+#     return data_r
+
+
 def rebuild(components: dict | str,
             artifact_components: np.ndarray | None = None,
             t_start: int | None = None,
@@ -685,13 +941,14 @@ def rebuild(components: dict | str,
     #     'Components were not in format expected'
 
     # Localising variables
-    eig_vec = components.eig_vec
-    eig_mix = components.eig_mix
-    shape = components.shape
-    roimask = components.roimask
-    maskind = components.maskind
-    mean = components.mean
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    shape = components['shape']
+    roimask = components['roimask']
+    mean = components['mean']
     t, x, y = shape
+
+    maskind = np.where(roimask.flat == 1)
 
     # Determine reconstruction indices
     reconstruct_indices = derive_reconstruct_indices(components, 
@@ -1367,35 +1624,179 @@ def filter_comparison(components: dict,
          overlay=overlay)
 
 
-def dynamic_threshold(components: dict) -> dict:
+def compute_dynamic_thresholds(eig_vec: np.ndarray) -> np.ndarray:
     # Returns a pySEAS-compatible dictionary entry for the threshold values as
     # calculated per "Dynamic Threshold" method in Weiser et al. 2023. These
     # thresholds are recorded in the polarity relative to the original ICA
-    # results (ie; not flipped). 
-
-    eig_vec = components['eig_vec']
-    output = {}
+    # results (ie; not necessarily flipped).
     
     # We calculate the bounds of the eig_vec distribution
-    min = np.min(eig_vec, axis = 0)
-    max = np.max(eig_vec, axis = 0)
+    spatial_max = np.max(eig_vec, axis=0)
+    spatial_min = np.min(eig_vec, axis=0)
 
     # And check the distribution is centred around zero
-    assert np.all(max > 0), "eig_vec distribution is deviant, max is less than 0."
-    assert np.all(min < 0), "eig_vec distribution is deviant, min is greater than 0."
+    assert np.all(spatial_max > 0), \
+        "eig_vec distribution is deviant, max is less than 0."
+    assert np.all(spatial_min < 0), \
+        "eig_vec distribution is deviant, min is greater than 0."
     
     # Then we identify return short tail as threshold, adjusting for flipping by ICA
-    short_tail = np.where(np.abs(min) > max, max, min)
-    flipped = -1 * np.sign(short_tail)
-    thresholds = short_tail
+    short_tail = np.where(np.abs(spatial_min) > spatial_max, 
+                          spatial_max, 
+                          spatial_min)
+    # flipped = -1 * np.sign(short_tail)
+    component_thresholds = -1 * short_tail
 
-    # Good to check our flipped values remain consistent vs other calculations
-    if 'flipped' in components.keys():
-        print("flipped already exists in components dict.")
-        assert np.all(flipped == components['flipped'])
+    # # Good to check our flipped values remain consistent vs other calculations
+    # if 'flipped' in components.keys():
+    #     print("flipped already exists in components dict.")
+    #     assert np.all(flipped == components['flipped'])
+    # else:
+    #     output['flipped'] = flipped
+
+    return component_thresholds
+
+
+def apply_dynamic_thresholds(components: dict) -> dict:
+    # Returns a pySEAS-compatible dictionary containing dynamically thresholded
+    # spatial components.
+    if 'components_are_flipped' not in components.keys():
+        components_are_flipped = False
     else:
-        output['flipped'] = flipped
-    output['component_thresholds'] = thresholds
+        components_are_flipped = components['components_are_flipped']
+
+    n_components = components['n_components']
+    eig_vec = components['eig_vec']
+    output = {}
+
+    if components_are_flipped:
+            flipped = np.ones(n_components)
+    else:
+        try:
+            flipped = components['flipped']
+        except KeyError:
+            flipped = compute_component_flips(components)
+            output['flipped'] = flipped
+
+    component_thresholds = compute_dynamic_thresholds(eig_vec)
+    
+    for i in range(n_components):
+        flip = flipped[i]
+        thresh = component_thresholds[i]
+        norm_vec = eig_vec[:, i] * flip
+        norm_thresh = thresh * flip
+        eig_vec[:, i] = np.where(norm_vec > norm_thresh, norm_vec, 0)
+        eig_vec[:, i] *= flip
+
+    output['dynamic_thresholds'] = component_thresholds
+    output['thresh_vec'] = eig_vec
+
+    return output
+
+
+def compute_component_normalisation(eig_vec: np.ndarray, 
+                                    eig_mix: np.ndarray, 
+                                    flipped: np.ndarray) -> tuple:
+    # Normalise components by spatial max, including polarity.
+    flip_vec = eig_vec * flipped
+    spatial_max = np.max(flip_vec, axis=0)
+    norm_vec = flip_vec / spatial_max
+    flip_mix = eig_mix * flipped
+    norm_mix = flip_mix * spatial_max
+
+    return norm_vec, norm_mix
+
+
+def normalise_components(components: dict) -> dict | None:
+    # Returns a pySEAS-compatible dictionary containing eig_vec and eig_mix
+    # arrays normalised to the absolute spatial max. Idempotent.
+
+    if 'components_are_flipped' not in components.keys():
+        components_are_flipped = False
+    else:
+        components_are_flipped = components['components_are_flipped']
+
+    if 'components_are_normalised' not in components.keys():
+        components_are_normalised = False
+    else:
+        components_are_normalised = components['components_are_normalised']
+    assert not components_are_normalised, "Components already normalised."
+
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    output = {}
+    
+    if components_are_flipped:
+        flipped = np.ones(eig_vec.shape[1])
+    else:
+        try:
+            flipped = components['flipped']
+        except KeyError:
+            flipped = compute_component_flips(components)
+            output['flipped'] = flipped
+            output['components_are_flipped'] = True
+
+    if components_are_normalised:
+        print("Components are already normalised, skipping process.")
+        return None
+    else:
+        norm_vec, norm_mix = compute_component_normalisation(eig_vec, 
+                                                             eig_mix,
+                                                             flipped)
+
+    output['eig_vec'] = norm_vec
+    output['eig_mix'] = norm_mix
+    output['timecourses'] = norm_mix.T
+    output['components_are_normalised'] = True
+
+    return output
+
+
+def compute_component_flips(components):
+    # Track component orientation and ensure positive spatial patterns
+    n_components = components['n_components']
+    eig_vec = components['eig_vec']
+    flipped = np.ones(n_components) # Init
+
+    for i in range(n_components):
+        # Find the index of maximum absolute value
+        max_idx = np.argmax(np.abs(eig_vec[:, i]))
+        # If that maximum value is negative, flip the component
+        if eig_vec[max_idx, i] < 0:
+            flipped[i] = -1
+
+    return flipped
+
+
+def unflip_components(components):
+    # Track component orientation and ensure positive spatial patterns
+    if 'components_are_flipped' not in components.keys():
+        components_are_flipped = False
+    else:
+        components_are_flipped = components['components_are_flipped']
+
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    output = {}
+
+    if components_are_flipped:
+        print("Components are already flipped, skipping process.")
+        return None
+    else:
+        try:
+            flipped = components['flipped']
+        except KeyError:
+            flipped = compute_component_flips(components)
+            output['flipped'] = flipped
+
+    flip_vec = eig_vec * flipped
+    flip_mix = eig_mix * flipped
+
+    output['eig_vec'] = flip_vec
+    output['eig_mix'] = flip_mix
+    output['timeseries'] = flip_mix.T
+    output['components_are_flipped'] = True
+
     return output
 
 
