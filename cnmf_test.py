@@ -3,9 +3,9 @@ import seas.hdf5manager
 from seas.ica import unflip_components, normalise_components, apply_dynamic_thresholds
 from seas.cnmf import run_cnmf
 
-TEST_DIR="/home/apluff/dev/test_data/"
+TEST_DIR="/scratch/user/s4296607/"
 TEST_INPATH = (TEST_DIR + 
-    "sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_comp-014_ica-initial.hdf5")
+    "sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_comp-014_ica-filtered.hdf5")
 TEST_OUTPATH = (TEST_DIR + 
     "sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_comp-014_cnmf-initial.hdf5")
 
@@ -23,8 +23,8 @@ def load_data(inpath: str) -> dict:
 def cnmf_preprocessing(components: dict) -> dict:
      flip = unflip_components(components)
      components.update(flip)
-     normal = normalise_components(components)
-     components.update(normal)
+     #normal = normalise_components(components)
+     #components.update(normal)
      thresholds = apply_dynamic_thresholds(components)
      components.update(thresholds)
 

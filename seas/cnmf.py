@@ -3,15 +3,18 @@ from timeit import default_timer as timer
 import numpy as np
 from seas.ica import Input, rebuild, apply_dynamic_thresholds
 from sklearn.decomposition import non_negative_factorization
+import matplotlib.pyplot as plt
 
 
 def run_cnmf(components: dict) -> dict:
     nmf_input = prep_nmf_input(components)
     X = nmf_input.vector
     k_components, W_init, H_init = prep_nmf_init(components)
-
+    print(f"W_init shape is: {W_init.shape}")
+    print(f"H_init shape is: {H_init.shape}")
+    print(f"roimask area size is {np.sum(nmf_input.roimask)}")
     t0 = timer()
-    W, H, n_iter = non_negative_factorization(X, 
+    W, H, n_iter = non_negative_factorization(X.T, 
                                                 W=W_init, 
                                                 H=H_init, 
                                                 n_components=k_components, 
@@ -53,7 +56,7 @@ def derive_nmf_mask(components: dict) -> np.ndarray:
     assert 'artifact_components' in components.keys(), \
         "No artifact_components found. Has this dictionary been filtered?"
     try:
-        thresh_vec = components['thres_vec']
+        thresh_vec = components['thresh_vec']
     except KeyError:
         thresh = apply_dynamic_thresholds(components)
         components.update(thresh)
@@ -114,6 +117,15 @@ def prep_nmf_init(components: dict) -> tuple:
     k_components = np.count_nonzero(signal_components)
 
     union_component = generate_union_component(H_init)
+
+    maskind = np.where(components['roimask'].flat == 1)
+    eigenbrain = np.empty(components['roimask'].shape)
+    eigenbrain[:] = np.nan
+    eigenbrain.flat[maskind] = union_component
+    plt.imshow(eigenbrain)
+    plt.show()
+
+
     k_components, W_init, H_init = append_component(union_component,
                                                     W_init,
                                                     H_init)
@@ -121,15 +133,16 @@ def prep_nmf_init(components: dict) -> tuple:
     # Constrain H_init to ROIs only
     mask = union_component.astype(np.uint8)
     mask[mask>1] = 1
+    print(f"Size of masked area: {np.sum(mask)}")
     nmfind = np.where(mask == 1)
-    H_init_sub = H_init[:, nmfind[0]] # Why dis nmfind a tupled array?
+    H_init_sub = H_init[:, nmfind[0]] # Why is nmfind a tupled array?
 
     return k_components, W_init, H_init_sub
 
 
 def generate_union_component(H_init: np.ndarray) -> np.ndarray:
     thresh_masks = H_init.astype(np.uint8)
-    thresh_union = np.sum(thresh_masks, axis=1).astype(np.bool)
+    thresh_union = np.sum(thresh_masks, axis=0).astype(np.bool)
     union_component = thresh_union.astype(np.float32)
     print(f"union_component is: {union_component}")
     print(f"union_component elements include: {np.unique(union_component)}")
@@ -148,6 +161,8 @@ def append_component(component: np.ndarray,
     W_init_super = np.zeros((frames, k_components)).astype(np.float32)
     # Implicit zeros for final timeseries are fine for update_H=False 
     W_init_super[:, 0:k_components-1] = W_init
-    H_init_super[k_components, :] = component
+    print(component.shape)
+    print(H_init_super.shape)
+    H_init_super[-1, :] = component
 
     return k_components, W_init_super, H_init_super
