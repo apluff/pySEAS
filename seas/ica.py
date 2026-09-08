@@ -1015,30 +1015,48 @@ def rebuild(components: dict | str,
 def reshape_vector_to_video(vector: np.ndarray, 
                             shape: Tuple[int, int, int], 
                             roimask: np.ndarray | None = None, 
-                            maskind: np.ndarray | None = None):
+                            maskind: np.ndarray | None = None) -> np.ndarray:
         if roimask is None:
             data_r = vector.reshape(shape)
         else:
             t, x, y = shape
-            reconstructed = np.zeros((x * y, t), dtype = np.float32)
+            reconstructed = np.zeros((x * y, t), dtype=np.float32)
             print(f'vector shape is: {vector.shape}')
             print(f'reconstructed shape is: {reconstructed.shape}')
             print(f'maskind is: {maskind}')
             reconstructed[maskind] = vector.swapaxes(0, 1)
             reconstructed = reconstructed.swapaxes(0, 1)
             data_r = reconstructed.reshape(t, x, y)
+
         return data_r
+
+
+def rebuild_residuals_movie(input: Input, components: dict) -> np.ndarray:
+    vector = input.vector.astype('float64')
+    original = reshape_vector_to_video(vector)
+    rebuilt = rebuild(components,
+                      artifact_components='none',
+                      apply_mean_filter=False,
+                      include_noise=True)
+    rebuilt -= rebuilt.mean(axis=0)
+    original -= original.mean(axis=0)
+    residuals = original - rebuilt
+
+    return residuals
 
 
 def calculate_residuals(input: Input, components: Components) -> dict:
     vector = input.vector.astype('float64')
     rebuilt = rebuild(components,
                       artifact_components='none',
-                      apply_mean_filter=False).T
-    rebuilt -= rebuilt.mean(axis=0)
+                      apply_mean_filter=False)
+    t, x, y = components['shape']
+    assert components['shape'] == input.shape, \
+        "Original and rebuilt video shapes don't match, are these the same video?"
+    rebuiltvec = rebuilt.reshape(t, x*y).T
+    rebuiltvec -= rebuiltvec.mean(axis=0)
     vector -= vector.mean(axis=0)
-    residuals = vector - rebuilt
-    abs_residuals = np.abs(residuals)
+    abs_residuals = np.abs(vector - rebuiltvec)
     residuals_temporal = abs_residuals.mean(axis=0)
 
     if input.roimask is not None:
@@ -1048,7 +1066,6 @@ def calculate_residuals(input: Input, components: Components) -> dict:
         residuals_spatial = np.reshape(abs_residuals.mean(axis=1),
                                        (input.shape[1], input.shape[2]))
 
-        
     output = {}
     output['residuals_spatial'] = residuals_spatial
     output['residuals_temporal'] = residuals_temporal
