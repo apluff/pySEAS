@@ -1019,6 +1019,8 @@ def reshape_vector_to_video(vector: np.ndarray,
         if roimask is None:
             data_r = vector.reshape(shape)
         else:
+            if maskind is None:
+                maskind = np.where(roimask.flat == 1)
             t, x, y = shape
             reconstructed = np.zeros((x * y, t), dtype=np.float32)
             print(f'vector shape is: {vector.shape}')
@@ -1031,9 +1033,9 @@ def reshape_vector_to_video(vector: np.ndarray,
         return data_r
 
 
-def rebuild_residuals_movie(input: Input, components: dict) -> np.ndarray:
+def rebuild_residuals(input: Input, components: dict) -> np.ndarray:
     vector = input.vector.astype('float64')
-    original = reshape_vector_to_video(vector)
+    original = reshape_vector_to_video(vector.T, input.shape, input.roimask)
     rebuilt = rebuild(components,
                       artifact_components='none',
                       apply_mean_filter=False,
