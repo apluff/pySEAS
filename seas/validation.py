@@ -1,6 +1,7 @@
 from typing import List
 
 import matplotlib.pyplot as plt
+import numpy as np
 from seas.ica import rebuild_eigenbrain
 
 def plot_component(components: dict, index: List[int]) -> None:
@@ -24,3 +25,18 @@ def plot_component(components: dict, index: List[int]) -> None:
         fig.suptitle("Component index=" + str(i))
         #plt.show()
         plt.savefig("/home/apluff/dev/test_data/fig_out/sub-201_base1_nmfcomp-" + str(i) + ".png")
+
+def plot_pixel_variance(video_data: np.ndarray, roimask: np.ndarray) -> None:
+    boolmask = roimask.astype(np.bool)
+    # maskind = np.where(roimask.flat == 1)
+    # t, y, x = rebuilt.shape
+    # print("Original video shape: (t, y, x) =", (t, y, x))
+    # shape = (t, y, x) 
+    # print(f"Shape of the original video: {shape} as {type(shape)}") 
+    # vidvec = rebuilt.reshape(t, x*y).T
+    var_map = np.var(video_data, axis=0, where=boolmask)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 4), layout='constrained')
+    ax1.imshow(var_map)
+    ax2.hist(var_map.flatten(), bins='fd', log=False)
+    fig.suptitle("Residual variance map")
+    plt.show
