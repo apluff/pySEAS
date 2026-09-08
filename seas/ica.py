@@ -587,7 +587,7 @@ def get_projector(config: Config) -> Projector:
 #         data_r += mean[t_start:t_stop, None]
 #         print('Done!')
 #         # Reshaping
-#         data_r = reshape_rebuilt_video(data_r, shape, roimask, maskind)
+#         data_r = reshape_vector_to_video(data_r, shape, roimask, maskind)
 #         return data_r
 
 #     def _rebuild_component_videos(eig_vec, eig_mix, 
@@ -605,7 +605,7 @@ def get_projector(config: Config) -> Projector:
 #             data_c += mean[t_start:t_stop, None]
 #             # Reshaping
 #             data_c = scale_dfof_to_8bit(data_c)
-#             data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+#             data_c = reshape_vector_to_video(data_c, shape, roimask, maskind)
 #             # Assign to compressed array (defaults to zstd)
 #             data_z = zarr.create_array(shape = data_c.shape, 
 #                                        chunks = (8, 8), 
@@ -627,7 +627,7 @@ def get_projector(config: Config) -> Projector:
 #                     data_c = np.dot(eig_vec[:, cluster_indices[i]],
 #                                     eig_mix[t_start:t_stop, cluster_indices[i]].T).T
 #                 data_c += mean[t_start:t_stop, None]
-#                 data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+#                 data_c = reshape_vector_to_video(data_c, shape, roimask, maskind)
 #                 data_c = scale_dfof_to_8bit(data_c)
 #                 data_r[int(i)] = data_c
 #             return data_r
@@ -651,7 +651,7 @@ def get_projector(config: Config) -> Projector:
 #         reconstruct_indices = np.where(artifact_components == 0)[0]
 #         return reconstruct_indices
 
-#     def reshape_rebuilt_video(data_r: np.ndarray, 
+#     def reshape_vector_to_video(data_r: np.ndarray, 
 #                               shape: Tuple[int, int, int], 
 #                               roimask: np.ndarray | None = None, 
 #                               maskind: np.ndarray | None = None):
@@ -842,7 +842,7 @@ def rebuild(components: dict | str,
         data_r += mean[t_start:t_stop, None]
         print('Done!')
         # Reshaping
-        data_r = reshape_rebuilt_video(data_r, shape, roimask, maskind)
+        data_r = reshape_vector_to_video(data_r, shape, roimask, maskind)
         return data_r
 
     def _rebuild_component_videos(eig_vec, eig_mix, 
@@ -860,7 +860,7 @@ def rebuild(components: dict | str,
             data_c += mean[t_start:t_stop, None]
             # Reshaping
             data_c = scale_dfof_to_8bit(data_c)
-            data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+            data_c = reshape_vector_to_video(data_c, shape, roimask, maskind)
             # Assign to compressed array (defaults to zstd)
             data_z = zarr.create_array(shape = data_c.shape, 
                                        chunks = (8, 8), 
@@ -882,7 +882,7 @@ def rebuild(components: dict | str,
                     data_c = np.dot(eig_vec[:, cluster_indices[i]],
                                     eig_mix[t_start:t_stop, cluster_indices[i]].T).T
                 data_c += mean[t_start:t_stop, None]
-                data_c = reshape_rebuilt_video(data_c, shape, roimask, maskind)
+                data_c = reshape_vector_to_video(data_c, shape, roimask, maskind)
                 data_c = scale_dfof_to_8bit(data_c)
                 data_r[int(i)] = data_c
             return data_r
@@ -905,23 +905,6 @@ def rebuild(components: dict | str,
 
         reconstruct_indices = np.where(artifact_components == 0)[0]
         return reconstruct_indices
-
-    def reshape_rebuilt_video(data_r: np.ndarray, 
-                              shape: Tuple[int, int, int], 
-                              roimask: np.ndarray | None = None, 
-                              maskind: np.ndarray | None = None):
-        if roimask is None:
-            data_r = data_r.reshape(shape)
-        else:
-            t, x, y = shape
-            reconstructed = np.zeros((x * y, t), dtype = np.float32)
-            print(f'data_r shape is: {data_r.shape}')
-            print(f'reconstructed shape is: {reconstructed.shape}')
-            print(f'maskind is: {maskind}')
-            reconstructed[maskind] = data_r.swapaxes(0, 1)
-            reconstructed = reconstructed.swapaxes(0, 1)
-            data_r = reconstructed.reshape(t, x, y)
-        return data_r
 
     def scale_dfof_to_8bit(data_r: np.ndarray) -> np.ndarray:
         assert data_r.dtype == np.float32, "Data is not in dF/F format."
@@ -1029,6 +1012,24 @@ def rebuild(components: dict | str,
     return data_r
 
 
+def reshape_vector_to_video(vector: np.ndarray, 
+                            shape: Tuple[int, int, int], 
+                            roimask: np.ndarray | None = None, 
+                            maskind: np.ndarray | None = None):
+        if roimask is None:
+            data_r = vector.reshape(shape)
+        else:
+            t, x, y = shape
+            reconstructed = np.zeros((x * y, t), dtype = np.float32)
+            print(f'vector shape is: {vector.shape}')
+            print(f'reconstructed shape is: {reconstructed.shape}')
+            print(f'maskind is: {maskind}')
+            reconstructed[maskind] = vector.swapaxes(0, 1)
+            reconstructed = reconstructed.swapaxes(0, 1)
+            data_r = reconstructed.reshape(t, x, y)
+        return data_r
+
+
 def calculate_residuals(input: Input, components: Components) -> dict:
     vector = input.vector.astype('float64')
     rebuilt = rebuild(components,
@@ -1036,15 +1037,17 @@ def calculate_residuals(input: Input, components: Components) -> dict:
                       apply_mean_filter=False).T
     rebuilt -= rebuilt.mean(axis=0)
     vector -= vector.mean(axis=0)
-    residuals = np.abs(vector - rebuilt)
-    residuals_temporal = residuals.mean(axis=0)
+    residuals = vector - rebuilt
+    abs_residuals = np.abs(residuals)
+    residuals_temporal = abs_residuals.mean(axis=0)
 
     if input.roimask is not None:
         residuals_spatial = np.zeros(input.roimask.shape)
-        residuals_spatial.flat[input.maskind] = residuals.mean(axis=1)
+        residuals_spatial.flat[input.maskind] = abs_residuals.mean(axis=1)
     else:
-        residuals_spatial = np.reshape(residuals.mean(axis=1),
-                                       (shape[1], shape[2]))
+        residuals_spatial = np.reshape(abs_residuals.mean(axis=1),
+                                       (input.shape[1], input.shape[2]))
+
         
     output = {}
     output['residuals_spatial'] = residuals_spatial
