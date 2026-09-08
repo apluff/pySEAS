@@ -3,12 +3,13 @@ import seas
 import numpy as np
 import tifffile as tif
 import matplotlib.pyplot as plt
-from seas.ica import Input, Config, Components
+from seas.ica import Input, Config, Components, rebuild_residuals_movie
 
 TEST_VIDEO="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_video-dfof.tif"
 TEST_MASK="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_image-mask.tif"
 TEST_MAXITER=1000
 TEST_OUTPATH="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_ica-picardOtest.hdf5"
+
 
 def load_data(video: np.ndarray, mask: np.ndarray) -> Input:
     # Load video and mask data
@@ -36,16 +37,20 @@ def load_data(video: np.ndarray, mask: np.ndarray) -> Input:
 
 
 def run_ica(input: Input, config: Config) -> Components:
-        components = seas.ica.project(input, config)
-        #domain_map = seas.domains.get_domain_map(components, map_only=False)
-        #components.update(domain_map)
+    components = seas.ica.project(input, config)
+    #domain_map = seas.domains.get_domain_map(components, map_only=False)
+    #components.update(domain_map)
 
-        return components
+    return components
 
 
 def save_data(components: Components, outpath: str) -> None:
-        f = seas.hdf5manager(outpath)
-        f.save(components)
+    f = seas.hdf5manager(outpath)
+    f.save(components)
+
+
+def save_video(video_data: np.ndarray, outpath: str) -> None:
+     tif.imwrite(outpath, video_data.astype(np.float32), imagej=True)
 
 
 def main(video, max_iter, mask, outpath, test_projector) -> None:
@@ -59,7 +64,10 @@ def main(video, max_iter, mask, outpath, test_projector) -> None:
                     )
     print(f'Running ICA test with projector: {test_projector}')
     components = run_ica(input, config)
+    residuals = rebuild_residuals_movie(input, components)
     save_data(components, outpath)
+    residual_path = outpath.replace("ica-initial", "ica-residuals")
+    save_data(residuals, residual_path)
 
 
 if __name__ == '__main__':
