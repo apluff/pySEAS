@@ -1199,11 +1199,11 @@ def sort_components(components: Components | None = None,
     Sorts components by some metric before cropping excess noise.
     '''
     assert components is not None, 'Components must be provided for sort.'
-    eig_mix = components.eig_mix
-    eig_vec = components.eig_vec
-    noise = components.noise_components
-    lag1 = components.lag1
-    lag1_full = components.lag1_full
+    eig_mix = components['eig_mix']
+    eig_vec = components['eig_vec']
+    noise = components['noise_components']
+    lag1 = components['lag1']
+    lag1_full = components['lag1_full']
     match sort_by:
         case 'timecourse_std': # Original pySEAS default.
             # Sort components by their eig val influence (approximated by timecourse standard deviation).
