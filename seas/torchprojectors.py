@@ -6,9 +6,26 @@ import cupy
 import numpy as np
 from sklearn.decomposition._nmf import _initialize_nmf
 import torch
-import torchnmf.nmf
+#import torchnmf.nmf
 
 from seas.signalanalysis import sort_noise, lag_n_autocorr
+
+
+@dataclass
+class Projection:
+    n_components: int
+    eig_vec: np.ndarray
+    eig_mix: np.ndarray
+    lag1_full: np.ndarray
+    noise: np.ndarray
+    cutoff: float | None
+    increased_cutoff: int
+    svd_cutoff: int | None
+
+    def __post_init__(self) -> None:
+        print('components shape:', self.eig_vec.shape)
+        assert self.n_components == self.eig_vec.shape[1], \
+            'n_components does not match the size of eig_vec, check outputs.'
 
 
 class Projector(ABC):

@@ -331,6 +331,27 @@ class Components(MutableMapping):
             print('Less than 75% signal.  Not cropping excess noise.')
 
 
+def save_project_metadata(
+        projector: str,
+        estimator: str | None,
+        n_components: int,
+        time_elapsed: float
+        ) -> dict:
+    # Save filter metadata information about how and when movie was filtered 
+    # in dictionary.
+    project_meta = {}
+    project_meta['time_elapsed'] = time_elapsed
+    project_meta['date'] = \
+        datetime.now().strftime('%Y%m%d')[2:]
+    fmt = '%Y-%m-%dT%H:%M:%SZ'
+    project_meta['tstmp'] = \
+        datetime.now().strftime(fmt)
+    project_meta['n_components'] = n_components
+    project_meta['projector'] = projector
+    project_meta['estimator'] = estimator
+    return project_meta
+
+
 def project(input: Input, config: Config) -> Components:
     '''
     Apply a decomposition to the first axis of the input vector.  
@@ -378,11 +399,33 @@ def project(input: Input, config: Config) -> Components:
                             svd_cutoff=projection.svd_cutoff,
                             svd_multiplier=config.svd_multiplier,
                             increased_cutoff=projection.increased_cutoff)
-    
+
     components.save_creation_metadata(projector=config.projector, 
-                                      estimator=config.estimator, 
-                                      n_components=projection.n_components, 
-                                      time_elapsed=t)
+                                          estimator=config.estimator, 
+                                          n_components=projection.n_components, 
+                                          time_elapsed=t)
+    
+    components = {}
+    components['eig_vec'] = projection.eig_vec
+    components['eig_mix'] = projection.eig_mix
+    components['n_components'] = projection.n_components
+    components['shape'] = input.shape
+    components['mean'] = mean
+    components['roimask'] = input.roimask
+    components['timecourses'] = projection.eig_mix.T
+    components['noise_components'] = projection.noise
+    components['lag1'] = projection.lag1_full
+    components['lag1_full'] = projection.lag1_full
+    components['cutoff'] = projection.cutoff
+    components['svd_cutoff'] = projection.svd_cutoff
+    components['svd_multiplier'] = config.svd_multiplier
+    components['increased_cutoff'] = projection.increased_cutoff
+    components['metadata'] = save_project_metadata(
+        projector=config.projector, 
+        estimator=config.estimator, 
+        n_components=projection.n_components, 
+        time_elapsed=t
+    )
 
     # Sort components by timecourse standard deviation per pyseas default
     # sorted_components = sort_components(components=components, sort_by='lag1')
