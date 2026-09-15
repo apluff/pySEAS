@@ -16,10 +16,12 @@ class Projector(ABC):
         pass
 
     @abstractmethod
-    def project(self, 
-                vector, 
-                n_components, 
-                w_init) -> Tuple[np.ndarray, np.ndarray]:
+    def project(
+            self, 
+            vector: np.ndarray, 
+            n_components: int, 
+            w_init: np.ndarray,
+            ) -> Tuple[np.ndarray, np.ndarray]:
         pass
 
 
