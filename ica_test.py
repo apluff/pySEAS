@@ -3,7 +3,7 @@ import seas
 import numpy as np
 import tifffile as tif
 import matplotlib.pyplot as plt
-from seas.ica import Input, Config, Components, rebuild_residuals
+from seas.ica import Input, Config, rebuild_residuals
 
 TEST_VIDEO="/home/apluff/dev/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_reg-jrigid_video-dfof.tif"
 TEST_MASK="/home/apluff/dev/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_image-mask.tif"
@@ -37,7 +37,7 @@ def load_data(video: str, mask: str) -> Input:
     return Input(vidvec, shape, binary_mask)
 
 
-def run_ica(input: Input, config: Config) -> Components:
+def run_ica(input: Input, config: Config) -> dict:
     components = seas.ica.project(input, config)
     #domain_map = seas.domains.get_domain_map(components, map_only=False)
     #components.update(domain_map)
@@ -45,7 +45,7 @@ def run_ica(input: Input, config: Config) -> Components:
     return components
 
 
-def save_data(components: Components, outpath: str) -> None:
+def save_data(components: dict, outpath: str) -> None:
     f = seas.hdf5manager(outpath)
     f.save(components)
 
@@ -67,8 +67,8 @@ def main(video, max_iter, mask, outpath, test_projector) -> None:
     components = run_ica(input, config)
     residuals = rebuild_residuals(input, components)
     save_data(components, outpath)
-    residual_path = outpath.replace("ica-initial", "ica-residuals")
-    save_data(residuals, residual_path)
+    residuals_path = outpath.replace("ica-initial", "ica-residuals")
+    save_video(residuals, residuals_path)
 
 
 if __name__ == '__main__':

@@ -421,11 +421,11 @@ def project(input: Input, config: Config) -> Components:
     components['svd_multiplier'] = config.svd_multiplier
     components['increased_cutoff'] = projection.increased_cutoff
     components['metadata'] = save_project_metadata(
-        projector=config.projector, 
-        estimator=config.estimator, 
-        n_components=projection.n_components, 
-        time_elapsed=t
-    )
+            projector=config.projector, 
+            estimator=config.estimator, 
+            n_components=projection.n_components, 
+            time_elapsed=t,
+            )
 
     # Sort components by timecourse standard deviation per pyseas default
     # sorted_components = sort_components(components=components, sort_by='lag1')
