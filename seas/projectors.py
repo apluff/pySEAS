@@ -1,13 +1,10 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
 from picard import Picard, picard
 from scipy import linalg
 from sklearn.decomposition import FastICA, NMF
-
-from seas.signalanalysis import sort_noise, lag_n_autocorr
 
 class Projector(ABC):
 
@@ -16,12 +13,11 @@ class Projector(ABC):
         pass
 
     @abstractmethod
-    def project(
-            self, 
-            vector: np.ndarray, 
-            n_components: int, 
-            w_init: np.ndarray,
-            ) -> Tuple[np.ndarray, np.ndarray]:
+    def project(self, 
+                vector: np.ndarray, 
+                n_components: int, 
+                w_init: np.ndarray,
+                ) -> Tuple[np.ndarray, np.ndarray]:
         pass
 
 
@@ -169,43 +165,43 @@ class _PicardICA(Projector):
                 vector: np.ndarray,
                 n_components: int,
                 w_init: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-            print('\nCalculating ICA with', n_components, 'components...')
-            ica = Picard(n_components=n_components,
-                         max_iter=self.max_iter,
-                         random_state=1000,
-                         w_init=w_init,
-                         ortho=self.ortho,
-                         )
-            try:
-                eig_vec = ica.fit_transform(vector)  # Eigenbrains
-            except ValueError:
-                print('Calculation exceeded float32 maximum.')
-                print('Trying again with float64 vector...')
-                # Value error if any value exceeds float32 maximum.
-                # Overcome this by converting to float64.
-                eig_vec = ica.fit_transform(vector.astype('float64'))
-            # print("n_iter:" , ica.n_iter_) # NOT PROVIDED FOR Picard
-            eig_mix = ica.mixing_
+        print('\nCalculating ICA with', n_components, 'components...')
+        ica = Picard(n_components=n_components,
+                        max_iter=self.max_iter,
+                        random_state=1000,
+                        w_init=w_init,
+                        ortho=self.ortho,
+                        )
+        try:
+            eig_vec = ica.fit_transform(vector)  # Eigenbrains
+        except ValueError:
+            print('Calculation exceeded float32 maximum.')
+            print('Trying again with float64 vector...')
+            # Value error if any value exceeds float32 maximum.
+            # Overcome this by converting to float64.
+            eig_vec = ica.fit_transform(vector.astype('float64'))
+        # print("n_iter:" , ica.n_iter_) # NOT PROVIDED FOR Picard
+        eig_mix = ica.mixing_
 
-            # The arrangement of outputs for this is weird. Check in detail
-            # if you need to use this implementation rather than sklearn
-            # interface above.
-            # K, W, Y, n_iter = picard(vector,
-            #                          n_components=n_components,
-            #                          max_iter=self.max_iter,
-            #                          w_init=w_init,
-            #                          random_state=1000,
-            #                          ortho=self.ortho,
-            #                          return_n_iter=True)
-            # eig_vec = Y # Y.T???
-            # w = np.dot(W, K)
-            # A = np.dot(w.T, np.linalg.inv(np.dot(w, w.T)))
-            # eig_mix = A
-            # print("n_iter:" , n_iter)
-            # REMINDER: Returns eig_vec.shape = (n_components, frames), and 
-            # eig_mix.shape = (n_components, masked_pixels)
-        
-            return eig_vec, eig_mix
+        # The arrangement of outputs for this is weird. Check in detail
+        # if you need to use this implementation rather than sklearn
+        # interface above.
+        # K, W, Y, n_iter = picard(vector,
+        #                          n_components=n_components,
+        #                          max_iter=self.max_iter,
+        #                          w_init=w_init,
+        #                          random_state=1000,
+        #                          ortho=self.ortho,
+        #                          return_n_iter=True)
+        # eig_vec = Y # Y.T???
+        # w = np.dot(W, K)
+        # A = np.dot(w.T, np.linalg.inv(np.dot(w, w.T)))
+        # eig_mix = A
+        # print("n_iter:" , n_iter)
+        # REMINDER: Returns eig_vec.shape = (n_components, frames), and 
+        # eig_mix.shape = (n_components, masked_pixels)
+    
+        return eig_vec, eig_mix
     
 
 class _NMF(Projector):
@@ -248,7 +244,7 @@ class _NMF(Projector):
         return eig_vec, eig_mix
 
 
-class Estimator(ABC):
+class Estimator(Projector):
 
     @abstractmethod
     def __init__(self):
@@ -260,13 +256,13 @@ class Estimator(ABC):
 
         return mean, vector
 
-    # Goose method QUACK
-    # This interface allows estimators (that calculate all components)
-    # to act as projectors.
     def project(self, 
                 vector: np.ndarray, 
                 n_components: None, 
                 w_init: None) -> Tuple[np.ndarray, np.ndarray]:
+        # Goose method QUACK
+        # This interface allows estimators (that calculate all components)
+        # to act as projectors.
         u, _, v = self.decompose(vector)
         return u, v.T
 
@@ -276,22 +272,25 @@ class _SVD(Estimator):
     def __init__(self):
         pass
 
-    def decompose(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def decompose(self, 
+                  vector: np.ndarray
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         try:
-            u, ev, v = linalg.svd(vector, full_matrices = False)
+            u, ev, v = linalg.svd(vector, full_matrices=False)
             print('PCA run with scipy.linalg.svd and gesdd lapack.')
         except ValueError:
             try:
                 print('Initial PCA failed.')
                 # LAPACK error if matricies are too big
-                u, ev, _ = linalg.svd(vector,
-                                      full_matrices = False,
-                                      lapack_driver = 'gesvd')
+                u, ev, _ = linalg.svd(
+                        vector,
+                        full_matrices=False,
+                        lapack_driver='gesvd',
+                        )
                 print('PCA run with scipy.linalg.svd and gesvd lapack.')
             except ValueError:
                 print('Secondary PCA failed.')
-                u, ev, _ = np.linalg.svd(vector,
-                                         full_matrices = False)
+                u, ev, _ = np.linalg.svd(vector, full_matrices=False)
                 print('PCA run with numpy.linalg.svd.')
         
         return u, ev, v

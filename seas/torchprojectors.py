@@ -5,41 +5,9 @@ from amica import AMICA
 import cupy
 import numpy as np
 from sklearn.decomposition._nmf import _initialize_nmf
+from seas.projectors import Projector, Estimator
 import torch
 #import torchnmf.nmf
-
-from seas.signalanalysis import sort_noise, lag_n_autocorr
-
-
-@dataclass
-class Projection:
-    n_components: int
-    eig_vec: np.ndarray
-    eig_mix: np.ndarray
-    lag1_full: np.ndarray
-    noise: np.ndarray
-    cutoff: float | None
-    increased_cutoff: int
-    svd_cutoff: int | None
-
-    def __post_init__(self) -> None:
-        print('components shape:', self.eig_vec.shape)
-        assert self.n_components == self.eig_vec.shape[1], \
-            'n_components does not match the size of eig_vec, check outputs.'
-
-
-class Projector(ABC):
-
-    @abstractmethod
-    def preprocess(self, vector) -> Tuple[np.ndarray, np.ndarray]:
-        pass
-
-    @abstractmethod
-    def project(self, 
-                vector, 
-                n_components, 
-                w_init) -> Tuple[np.ndarray, np.ndarray]:
-        pass
 
 
 class _AMICA(Projector):
@@ -49,10 +17,10 @@ class _AMICA(Projector):
                  svd_multiplier: float | None = 5, 
                  max_iter: int = 1000,
                  estimator: str | None = 'svd') -> None:
-            self.n_components = n_components
-            self.svd_multiplier = svd_multiplier
-            self.max_iter = max_iter
-            self.estimator = estimator
+        self.n_components = n_components
+        self.svd_multiplier = svd_multiplier
+        self.max_iter = max_iter
+        self.estimator = estimator
             
     def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         mean = np.mean(vector, 0).flatten()
@@ -65,13 +33,14 @@ class _AMICA(Projector):
                 n_components: int,
                 w_init: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         print('\nCalculating ICA with', n_components, 'components...')
-        ica = AMICA(n_components=n_components,
-                    max_iter=self.max_iter,
-                    random_state=1000,
-                    w_init=w_init,
-                    device='cuda',
-                    do_newton=False,
-                    )
+        ica = AMICA(
+                n_components=n_components,
+                max_iter=self.max_iter,
+                random_state=1000,
+                w_init=w_init,
+                device='cuda',
+                do_newton=False,
+                )
         try:
             eig_vec = ica.fit_transform(vector)  # Eigenbrains
         except ValueError:
@@ -118,11 +87,12 @@ class _torchNMF(Projector):
         W, H = _initialize_nmf(vector.T, n_components, random_state=1000)
         torch_vector = torch.from_numpy(vector)
         torch_vector = torch_vector.t().cuda()
-        nmf = torchnmf.nmf.NMF(torch_vector.shape,
-                                W=W,
-                                H=H,
-                                rank=n_components,
-                                )
+        nmf = torchnmf.nmf.NMF(
+                torch_vector.shape,
+                W=W,
+                H=H,
+                rank=n_components,
+                )
         nmf = nmf.cuda()
         total_iter = nmf.fit(torch_vector)
         W = nmf.W
@@ -134,41 +104,15 @@ class _torchNMF(Projector):
         return eig_vec, eig_mix
 
 
-class Estimator(Projector):
-
-    @abstractmethod
-    def __init__(self):
-            pass
-
-    def preprocess(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-            mean = np.mean(vector, 0).flatten()
-            vector = vector - mean
-    
-            return mean, vector
-
-    # Goose method QUACK
-    # This interface allows estimators (that calculate all components)
-    # to act as projectors.
-    def project(self, n_components: int, w_init: np.ndarray, vector: np.ndarray) -> Projection:
-        u, ev, v = self.decompose(vector)
-        lag1 = lag_n_autocorr(v.T, 1)
-        noise, cutoff = sort_noise(v.T, lag1)
-        return Projection(n_components=np.size(ev),
-                          eig_vec=u,
-                          eig_mix=v.T,
-                          lag1_full=lag1,
-                          noise=noise,
-                          cutoff=cutoff,
-                          increased_cutoff=None)
-
-
 class _torchSVD(Estimator):
 
     def __init__(self):
             pass
     
-    def decompose(self, vector: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        u, ev, v = cupy.linalg.svd(vector, full_matrices = False)
+    def decompose(self, 
+                  vector: np.ndarray
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        u, ev, v = cupy.linalg.svd(vector, full_matrices=False)
         print('PCA run with cupy.linalg.svd and gesvd lapack via CUDA.')
 
         return u, ev, v

@@ -474,10 +474,11 @@ def projection_loop(vector: np.ndarray,
     '''
     # Estimate n_components if necessary
     if config.estimator is not None and config.n_components is None:
-        n_components, w_init = estimate_n_components(vector, 
-                                                     config.svd_multiplier,
-                                                     config.estimator,
-                                                     )
+        n_components, w_init = estimate_n_components(
+                vector, 
+                config.svd_multiplier,
+                config.estimator,
+                )
         svd_cutoff = n_components
     else:
         n_components = config.n_components
@@ -496,15 +497,15 @@ def projection_loop(vector: np.ndarray,
         noise, cutoff = sort_noise(timecourses, lag1)
 
         projection = Projection(
-            n_components=n_components,
-            eig_vec=eig_vec,
-            eig_mix=eig_mix,
-            lag1_full=lag1,
-            noise=noise,
-            cutoff=cutoff,
-            increased_cutoff=increased_cutoff,
-            svd_cutoff=svd_cutoff,
-            )
+                n_components=n_components,
+                eig_vec=eig_vec,
+                eig_mix=eig_mix,
+                lag1_full=lag1,
+                noise=noise,
+                cutoff=cutoff,
+                increased_cutoff=increased_cutoff,
+                svd_cutoff=svd_cutoff,
+                )
 
         if n_components is None:
             underdecomposed, n_components, increased_cutoff = \
@@ -520,38 +521,50 @@ def get_projector(config: Config) -> Projector:
     # cuda runtime requirements on Bunya.
     match config.projector:
         case 'fastica':
-            calculator = _FastICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier, 
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator)
+            calculator = _FastICA(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier, 
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    )
         case 'picard':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator)
+            calculator = _PicardICA(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier,
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    )
         case 'picard-orth':
-            calculator = _PicardICA(n_components=config.n_components,
-                                    svd_multiplier=config.svd_multiplier,
-                                    max_iter=config.max_iter,
-                                    estimator=config.estimator,
-                                    ortho=True)
+            calculator = _PicardICA(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier,
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    ortho=True,
+                    )
         case 'amica':
             from seas.torchprojectors import _AMICA
-            calculator = _AMICA(n_components=config.n_components,
-                                svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter,
-                                estimator=config.estimator)
+            calculator = _AMICA(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier,
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    )
         case 'nmf':
-            calculator = _NMF(n_components=config.n_components,
-                                svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter,
-                                estimator=config.estimator)
+            calculator = _NMF(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier,
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    )
         case 'torchnmf':
             from seas.torchprojectors import _torchNMF
-            calculator = _torchNMF(n_components=config.n_components,
-                                svd_multiplier=config.svd_multiplier,
-                                max_iter=config.max_iter,
-                                estimator=config.estimator)
+            calculator = _torchNMF(
+                    n_components=config.n_components,
+                    svd_multiplier=config.svd_multiplier,
+                    max_iter=config.max_iter,
+                    estimator=config.estimator,
+                    )
         case 'svd':
             calculator = _SVD()
         case 'torchsvd':
@@ -1885,8 +1898,10 @@ def noise_SD_threshold(components: dict, thresh: float = 3) -> dict:
         peak = (bins[k] + bins[k + 1]) / 2
         min = np.min(timecourses[i])
         max = np.max(timecourses[i])
-        assert np.all(max > 0), "Timecourse {i} distribution is deviant, max is less than 0."
-        assert np.all(min < 0), "Timecourse {i} distribution is deviant, min is greater than 0."
+        assert np.all(max > 0), \
+            "Timecourse {i} distribution is deviant, max is less than 0."
+        assert np.all(min < 0), \
+            "Timecourse {i} distribution is deviant, min is greater than 0."
         
         # And check the polarity of the distribution as returned by ICA
         if np.abs(min) > max:
