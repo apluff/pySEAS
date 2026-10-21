@@ -385,42 +385,46 @@ def project(input: Input, config: Config) -> Components:
     t = timer() - t0
     print('Data projection took: {0} sec'.format(t))
 
-    components = Components(eig_vec=projection.eig_vec,
-                            eig_mix=projection.eig_mix,
-                            n_components=projection.n_components,
-                            shape=input.shape,
-                            mean=mean,
-                            roimask=input.roimask,
-                            timecourses=projection.eig_mix.T,
-                            noise_components=projection.noise,
-                            lag1=projection.lag1_full,
-                            lag1_full=projection.lag1_full,
-                            cutoff=projection.cutoff,
-                            svd_cutoff=projection.svd_cutoff,
-                            svd_multiplier=config.svd_multiplier,
-                            increased_cutoff=projection.increased_cutoff)
+    # components = Components(eig_vec=projection.eig_vec,
+    #                         eig_mix=projection.eig_mix,
+    #                         n_components=projection.n_components,
+    #                         shape=input.shape,
+    #                         mean=mean,
+    #                         roimask=input.roimask,
+    #                         timecourses=projection.eig_mix.T,
+    #                         noise_components=projection.noise,
+    #                         lag1=projection.lag1_full,
+    #                         lag1_full=projection.lag1_full,
+    #                         cutoff=projection.cutoff,
+    #                         svd_cutoff=projection.svd_cutoff,
+    #                         svd_multiplier=config.svd_multiplier,
+    #                         increased_cutoff=projection.increased_cutoff)
 
-    components.save_creation_metadata(projector=config.projector, 
-                                          estimator=config.estimator, 
-                                          n_components=projection.n_components, 
-                                          time_elapsed=t)
+    # components.save_creation_metadata(projector=config.projector, 
+    #                                       estimator=config.estimator, 
+    #                                       n_components=projection.n_components, 
+    #                                       time_elapsed=t)
     
     components = {}
+    ## Projection data (inherited from pySEAS)
     components['eig_vec'] = projection.eig_vec
     components['eig_mix'] = projection.eig_mix
-    components['n_components'] = projection.n_components
-    components['shape'] = input.shape
-    components['mean'] = mean
-    components['roimask'] = input.roimask
     components['timecourses'] = projection.eig_mix.T
+    components['mean'] = mean
+    ## Projection metadata (inherited from pySEAS)
+    components['n_components'] = projection.n_components
     components['noise_components'] = projection.noise
     components['lag1'] = projection.lag1_full
     components['lag1_full'] = projection.lag1_full
-    components['cutoff'] = projection.cutoff
     components['svd_cutoff'] = projection.svd_cutoff
-    components['svd_multiplier'] = config.svd_multiplier
     components['increased_cutoff'] = projection.increased_cutoff
-    components['metadata'] = save_project_metadata(
+    components['cutoff'] = projection.cutoff
+    ## Input metadata (inherited from pySEAS)
+    components['shape'] = input.shape
+    components['roimask'] = input.roimask
+    components['svd_multiplier'] = config.svd_multiplier
+    ## Project metadata
+    components['project_meta'] = save_project_metadata(
             projector=config.projector, 
             estimator=config.estimator, 
             n_components=projection.n_components, 
@@ -428,27 +432,30 @@ def project(input: Input, config: Config) -> Components:
             )
 
     # Sort components by timecourse standard deviation per pyseas default
-    # sorted_components = sort_components(components=components, sort_by='lag1')
-    # components.update(sorted_components)
+    sorted_components = sort_components(components=components, sort_by='lag1')
+    components.update(sorted_components)
 
-    # # Crop excess noise components from record
-        # if config.crop_excess_noise and config.n_components is None:
-        #     cropped_components = crop_excess_noise(components)
-        #     # components.crop_excess_noise()
-        #     if cropped_components is not None:
-        #         components.update(cropped_components)
-        # else:
-        #     print('Noise retention enabled. Not cropping excess noise.')
-    
-    # Sort components then crop noise
-    components.sort_components(sort_by='timecourse_std')
-    if config.crop_excess_noise:
-        components.crop_excess_noise()
+    # Crop excess noise components from record
+    if config.crop_excess_noise and config.n_components is None:
+        cropped_components = crop_excess_noise(components)
+        if cropped_components is not None:
+            components.update(cropped_components)
     else:
         print('Noise retention enabled. Not cropping excess noise.')
+    
+    # # Sort components then crop noise
+    # components.sort_components(sort_by='timecourse_std')
+    # if config.crop_excess_noise:
+    #     components.crop_excess_noise()
+    # else:
+    #     print('Noise retention enabled. Not cropping excess noise.')
+
+    # Flip inverted components
+    flipped_components = unflip_components(components)
+    components.update(flipped_components)
 
     # Unflip inverted components and lastly calculate residuals
-    components.unflip_components()
+    # components.unflip_components()
     if config.calc_residuals:
         try:
             residuals = calculate_residuals(input, components)
@@ -457,10 +464,6 @@ def project(input: Input, config: Config) -> Components:
             print('Residual Calculation Failed!!')
             print('\t', e)
 
-    # # Flip inverted components
-    # flipped_components = unflip_components(components)
-    # components.update(flipped_components)
-    
     # print('\n')
     return components
 
@@ -518,7 +521,7 @@ def projection_loop(vector: np.ndarray,
 
 def get_projector(config: Config) -> Projector:
     # We only import from torchprojectors as necessary due to its torch and
-    # cuda runtime requirements on Bunya.
+    # cuda runtime requirements on Bunya (only satisfied on GPU partitions).
     match config.projector:
         case 'fastica':
             calculator = _FastICA(
@@ -1133,7 +1136,8 @@ def calculate_residuals(input: Input, components: Components) -> dict:
 
 def estimate_n_components(vector: np.ndarray, 
                           svd_multiplier: float = 5,
-                          estimator: str = 'cusvd') -> Tuple[int, np.ndarray]:
+                          estimator: str = 'svd'
+                          ) -> Tuple[int, np.ndarray]:
     
     match estimator:
         case 'svd':
