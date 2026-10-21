@@ -22,7 +22,7 @@ from skimage.morphology import remove_small_objects
 from skimage import draw
 from scipy import ndimage
 import tifffile as tif
-import zarr 
+#import zarr 
 
 
 @dataclass
@@ -431,8 +431,8 @@ def project(input: Input, config: Config) -> Components:
             time_elapsed=t,
             )
 
-    # Sort components by timecourse standard deviation per pyseas default
-    sorted_components = sort_components(components=components, sort_by='lag1')
+    # Sort components sort components before cropping noise 
+    sorted_components = sort_components(components=components, sort_by='timecourse_std')
     components.update(sorted_components)
 
     # Crop excess noise components from record
@@ -443,19 +443,11 @@ def project(input: Input, config: Config) -> Components:
     else:
         print('Noise retention enabled. Not cropping excess noise.')
     
-    # # Sort components then crop noise
-    # components.sort_components(sort_by='timecourse_std')
-    # if config.crop_excess_noise:
-    #     components.crop_excess_noise()
-    # else:
-    #     print('Noise retention enabled. Not cropping excess noise.')
-
     # Flip inverted components
-    flipped_components = unflip_components(components)
-    components.update(flipped_components)
+    #flipped_components = unflip_components(components)
+    #components.update(flipped_components)
 
-    # Unflip inverted components and lastly calculate residuals
-    # components.unflip_components()
+    # Lastly, calculate residuals
     if config.calc_residuals:
         try:
             residuals = calculate_residuals(input, components)
@@ -1196,35 +1188,36 @@ def approximate_svd_linearity_transition(eig_val: np.ndarray):
     return transition
 
 
-def unflip_components(components: Components) -> dict:
+def unflip_components(components: dict) -> dict:
     # Track component orientation and ensure positive spatial patterns
-    n_components = components.n_components
-    eig_vec = np.zeros_like(components.eig_vec)
-    eig_mix = np.zeros_like(components.eig_mix)
+    n_components = components["n_components"]
+    eig_vec = np.zeros_like(components["eig_vec"])
+    eig_mix = np.zeros_like(components["eig_mix"])
     flipped = np.ones(n_components)
     
     for i in range(n_components):
         # Find the index of maximum absolute value
-        max_idx = np.argmax(np.abs(components.eig_vec[:, i]))
+        max_idx = np.argmax(np.abs(components["eig_vec"][:, i]))
         # If that maximum value is negative, flip the component
-        if components.eig_vec[max_idx, i] < 0:
-            eig_vec[:, i] = -1 * components.eig_vec[:, i]
-            eig_mix[:, i] = -1 * components.eig_mix[:, i]
+        if components["eig_vec"][max_idx, i] < 0:
+            eig_vec[:, i] = -1 * components["eig_vec"][:, i]
+            eig_mix[:, i] = -1 * components["eig_mix"][:, i]
             flipped[i] = -1
 
         output = {}
         output['eig_vec'] = eig_vec
         output['eig_mix'] = eig_mix
+        output['timecourses'] = eig_mix.T
         output['flipped'] = flipped
 
         return output
 
 
-def crop_excess_noise(components: Components) -> dict:
-    n_components = components.n_components
-    eig_vec = components.eig_vec
-    eig_mix = components.eig_mix
-    noise = components.noise_components
+def crop_excess_noise(components: dict) -> dict:
+    n_components = components["n_components"]
+    eig_vec = components["eig_vec"]
+    eig_mix = components["eig_mix"]
+    noise = components["noise_components"]
     
     print('Cropping excess noise components')
     reduced_n_components = int((noise.size - noise.sum()) * 1.25)
@@ -1244,6 +1237,7 @@ def crop_excess_noise(components: Components) -> dict:
         output = {}
         output['eig_vec'] = eig_vec
         output['eig_mix'] = eig_mix
+        output['timecourses'] = timecourses
         output['n_components'] = n_components
         output['noise_components'] = noise_components
         output['lag1'] = lag1
@@ -1253,7 +1247,7 @@ def crop_excess_noise(components: Components) -> dict:
         print('Less than 75% signal.  Not cropping excess noise.')
 
 
-def sort_components(components: Components | None = None,
+def sort_components(components: dict | None = None,
                     sort_by: str = 'timecourse_std') -> dict:
     '''
     Sorts components by some metric before cropping excess noise.
@@ -1261,6 +1255,7 @@ def sort_components(components: Components | None = None,
     assert components is not None, 'Components must be provided for sort.'
     eig_mix = components['eig_mix']
     eig_vec = components['eig_vec']
+    timecourses = components['timecourses']
     noise = components['noise_components']
     lag1 = components['lag1']
     lag1_full = components['lag1_full']
@@ -1273,6 +1268,7 @@ def sort_components(components: Components | None = None,
             ev_sort = np.argsort(lag1)
     eig_vec = eig_vec[:, ev_sort][:, ::-1]
     eig_mix = eig_mix[:, ev_sort][:, ::-1]
+    timecourses = eig_mix.T
     noise_components = noise[ev_sort][::-1]
     lag1 = [ev_sort][::-1]
     lag1_full = lag1_full[ev_sort][::-1]
@@ -1280,6 +1276,7 @@ def sort_components(components: Components | None = None,
     output = {}
     output['eig_vec'] = eig_vec
     output['eig_mix'] = eig_mix
+    output['timecourses'] = timecourses
     output['noise_components'] = noise_components
     output['lag1'] = lag1
     output['lag1_full'] = lag1_full

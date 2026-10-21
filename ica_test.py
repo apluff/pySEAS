@@ -5,18 +5,27 @@ import tifffile as tif
 import matplotlib.pyplot as plt
 from seas.ica import Input, Config, rebuild_residuals
 
-TEST_VIDEO="/home/apluff/dev/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_reg-jrigid_video-dfof.tif"
-TEST_MASK="/home/apluff/dev/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_image-mask.tif"
-TEST_MAXITER=5000
-TEST_OUTPATH="/home/apluff/dev/test_data/sub-201_ses-01_age-P34_rec-baseline_run-01_scrop-normcorre_reg-jrigid_ica-amicatest.hdf5"
+TEST_VIDEO="/QRISdata/Q5451/derivatives/sub-201_species-ftd_id-U2631h_age-P34/ses-01_date-20260605/funcimg/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_crop-LH_video-dfof.tif"
+TEST_FPS=7.5
+TEST_MASK="/QRISdata/Q5451/derivatives/sub-201_species-ftd_id-U2631h_age-P34/ses-01_date-20260605/funcimg/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_crop-LH_image-cropmask.tif"
+TEST_MAXITER=1000
+TEST_OUTPATH="/scratch/user/s4296607/sub-201_ses-01_age-P34_rec-baseline_run-01_comp-014_crop-LH_ica-refactortest4.hdf5"
+TEST_ALGO="fastica"
 
-
-def load_data(video: str, mask: str) -> Input:
+def load_data(video: str, fps: float, mask: str) -> Input:
     # Load video and mask data
     try:
         video_data = tif.imread(video)
-        video_data = video_data[::2]
         print(f"Video is Type: {type(video_data)} \nShape: {video_data.shape}")
+        t = video_data.shape[0]
+        if t > 9200:
+            print(f"Video frames is: {t}")
+            print(f"Video is a 1300s recording, calculating 50s buffer @ {fps}fps.")
+            buffer_frames = int(50*fps)
+            print(f"Clipping ends by {buffer_frames} frames.")
+            video_data = video_data[buffer_frames : t-buffer_frames]
+            t_new = video_data.shape[0]
+            print(f"New video frames is: {t_new}")
     except FileNotFoundError:
         print('File not found', flush=True)
     try:
@@ -54,28 +63,29 @@ def save_video(video_data: np.ndarray, outpath: str) -> None:
      tif.imwrite(outpath, video_data.astype(np.float32), imagej=True)
 
 
-def main(video, max_iter, mask, outpath, test_projector) -> None:
-    input = load_data(video, mask)
-    config = Config(n_components=500,
+def main(video, fps, max_iter, mask, outpath, test_projector) -> None:
+    input = load_data(video, fps, mask)
+    config = Config(n_components=None,
                     calc_residuals=False,
-                    crop_excess_noise=False, 
+                    crop_excess_noise=True, 
                     max_iter=max_iter,
                     projector=test_projector,
                     estimator='svd',
                     )
     print(f'Running ICA test with projector: {test_projector}')
     components = run_ica(input, config)
-    residuals = rebuild_residuals(input, components)
+    #residuals = rebuild_residuals(input, components)
     save_data(components, outpath)
-    residuals_path = outpath.replace("ica-initial", "ica-residuals")
-    save_video(residuals, residuals_path)
+    #residuals_path = outpath.replace("ica-initial", "ica-residuals")
+    #save_video(residuals, residuals_path)
 
 
 if __name__ == '__main__':
     video = TEST_VIDEO
+    fps = TEST_FPS
     max_iter = TEST_MAXITER
     mask = TEST_MASK
     outpath = TEST_OUTPATH
-    test_projector=sys.argv[1]
+    test_projector=TEST_ALGO
     
-    main(video, max_iter, mask, outpath, test_projector)
+    main(video, fps, max_iter, mask, outpath, test_projector)

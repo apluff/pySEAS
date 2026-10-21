@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 
 import numpy as np
-from picard import Picard, picard
+#from picard import Picard, picard
 from scipy import linalg
 from sklearn.decomposition import FastICA, NMF
 
