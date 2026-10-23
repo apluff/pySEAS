@@ -37,6 +37,7 @@ def run_cnmf(components: dict) -> dict:
     output['eig_vec'] = H.T
     output['eig_mix'] = W
     output['timecourses'] = W.T
+    output['shape'] = components['shape']
     output['mean'] = mean
     output['roimask'] = nmf_input.roimask
     output['artifact_components'] = np.zeros(k_components)
