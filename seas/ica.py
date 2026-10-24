@@ -352,7 +352,7 @@ def save_project_metadata(
     return project_meta
 
 
-def project(input: Input, config: Config) -> Components:
+def project(input: Input, config: Config) -> dict:
     '''
     Apply a decomposition to the first axis of the input vector.  
     If a roimask was provided, the flattened roimask will be used to crop the 
@@ -432,7 +432,9 @@ def project(input: Input, config: Config) -> Components:
             )
 
     # Sort components sort components before cropping noise 
-    sorted_components = sort_components(components=components, sort_by='timecourse_std')
+    sorted_components = sort_components(components=components, 
+                                        sort_by='timecourse_std'
+                                        )
     components.update(sorted_components)
 
     # Crop excess noise components from record
@@ -1098,7 +1100,9 @@ def rebuild_residuals(input: Input, components: dict) -> np.ndarray:
     return residuals
 
 
-def calculate_residuals(input: Input, components: Components) -> dict:
+def calculate_residuals(input: Input, components: dict) -> dict:
+    # Matches original residual pySEAS residual calculation, why use
+    # abs(vector - rebuiltvec) though?
     vector = input.vector.astype('float64')
     rebuilt = rebuild(components,
                       artifact_components='none',
