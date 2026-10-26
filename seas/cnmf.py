@@ -1,7 +1,8 @@
 from timeit import default_timer as timer
-
+from typing import Tuple
 import numpy as np
-from seas.ica import Input, rebuild, apply_dynamic_thresholds
+from seas.ica import Input, rebuild, apply_dynamic_thresholds, rebuild_eigenbrain
+from skimage.measure import centroid
 from sklearn.decomposition import non_negative_factorization
 import matplotlib.pyplot as plt
 
@@ -118,18 +119,21 @@ def prep_nmf_init(components: dict) -> tuple:
     k_components = np.count_nonzero(signal_components)
 
     union_component = generate_union_component(H_init)
+    # ghost_components = generate_shadow_components(H_init)
 
-    maskind = np.where(components['roimask'].flat == 1)
-    eigenbrain = np.empty(components['roimask'].shape)
-    eigenbrain[:] = np.nan
-    eigenbrain.flat[maskind] = union_component
-    plt.imshow(eigenbrain)
-    plt.show()
-
+    # maskind = np.where(components['roimask'].flat == 1)
+    # eigenbrain = np.empty(components['roimask'].shape)
+    # eigenbrain[:] = np.nan
+    # eigenbrain.flat[maskind] = union_component
+    # plt.imshow(eigenbrain)
+    # plt.show()
 
     k_components, W_init, H_init = append_component(union_component,
                                                     W_init,
                                                     H_init)
+    # k_components, W_init, H_init = append_components(ghost_components,
+    #                                                  W_init,
+    #                                                  H_init)
 
     # Constrain H_init to ROIs only
     mask = union_component.astype(np.uint8)
@@ -151,6 +155,15 @@ def generate_union_component(H_init: np.ndarray) -> np.ndarray:
     return union_component
 
 
+def generate_shadow_components(H_init: np.ndarray) -> np.ndarray:
+    thresh_masks = H_init.astype(np.bool)
+    ghost_components = thresh_masks.astype(np.float32)
+    print(f"ghost_components is: {ghost_components}")
+    print(f"ghost_components elements include: {np.unique(ghost_components)}")
+
+    return ghost_components
+
+
 def append_component(component: np.ndarray, 
                      W_init: np.ndarray, 
                      H_init: np.ndarray) -> tuple:
@@ -167,3 +180,50 @@ def append_component(component: np.ndarray,
     H_init_super[-1, :] = component
 
     return k_components, W_init_super, H_init_super
+
+
+def append_components(components: np.ndarray, 
+                      W_init: np.ndarray, 
+                      H_init: np.ndarray) -> tuple:
+    old_k = W_init.shape[1]
+    new_k = components.shape[0]
+    k_components = old_k + new_k
+    frames = W_init.shape[0]
+    pixels = H_init.shape[1]
+    H_init_super = np.zeros((k_components, pixels)).astype(np.float32)
+    H_init_super[0:old_k, :] = H_init
+    W_init_super = np.zeros((frames, k_components)).astype(np.float32)
+    # Implicit zeros for final timeseries are fine for update_H=False 
+    W_init_super[:, 0:old_k] = W_init
+    print(components.shape)
+    print(H_init_super.shape)
+    H_init_super[old_k:old_k+new_k, :] = components
+
+    return k_components, W_init_super, H_init_super
+
+
+def compile_rastermap_data(
+        components: dict,
+        ) -> Tuple[np.ndarray, np.ndarray]:
+    eig_vec = components['eig_vec']
+    eig_mix = components['eig_mix']
+    roimask = components['roimask']
+    artifact_components = components['artifact_components']
+    signal_components = np.where(artifact_components != 1)
+
+    # Timeseries data
+    timeseries = eig_mix.T
+    timeseries = timeseries[signal_components]    
+
+    # Location data
+    eig_brains = rebuild_eigenbrain(eig_vec, roimask=roimask, bulk=True)
+    eig_brains = eig_brains[signal_components]
+    eig_brains[np.isnan(eig_brains)] = 0
+    locations = []
+    for i in range(eig_brains.shape[0]):
+        loc = centroid(eig_brains[i])
+        locations.append(loc)
+    locations = np.vstack(locations)
+    locations = np.flip(locations, axis=1)
+
+    return timeseries, locations
